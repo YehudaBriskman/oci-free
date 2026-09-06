@@ -1,3 +1,5 @@
+# Grafana: public, but every request passes through oauth2-proxy first, which
+# only admits the GitHub account on the allowlist.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,11 +8,14 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: monitoring-github-auth@kubernetescrd
 spec:
   rules:
     - host: grafana.yehudabriskman.com
       http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: kube-prometheus-stack-grafana, port: {number: 80}}}}]}
 ---
+# Forgejo: tailnet-only. It cannot sit behind oauth2-proxy because git over HTTPS
+# and the API cannot complete a browser OAuth redirect.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -19,6 +24,7 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: forgejo-tailnet-only@kubernetescrd
 spec:
   rules:
     - host: git.yehudabriskman.com
