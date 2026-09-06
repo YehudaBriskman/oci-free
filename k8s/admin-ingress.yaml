@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  rules:
+    - host: grafana.yehudabriskman.com
+      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: kube-prometheus-stack-grafana, port: {number: 80}}}}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgejo
+  namespace: forgejo
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  rules:
+    - host: git.yehudabriskman.com
+      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: forgejo-http, port: {number: 3000}}}}]}

@@ -1,0 +1,17 @@
+# Never commit: contains the Tailscale auth key
+terraform.tfvars
+*.tfvars
+!*.tfvars.example
+
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+tfplan
+*.tfplan
+
+# Cloudflare API token
+.cf-token
+
+# GitHub OAuth app credentials
+.github-oauth

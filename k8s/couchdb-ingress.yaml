@@ -1,0 +1,20 @@
+# Tailnet-only: the github-auth middleware cannot be used here because Obsidian
+# LiveSync authenticates with HTTP basic auth and cannot complete an OAuth redirect.
+# Restricted to 100.64.0.0/10 at the proxy, and DNS points at the tailnet IP.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: couchdb
+  namespace: obsidian
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: obsidian-tailnet-only@kubernetescrd
+spec:
+  rules:
+    - host: couchdb.yehudabriskman.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: couchdb-couchdb, port: {number: 5984}}}

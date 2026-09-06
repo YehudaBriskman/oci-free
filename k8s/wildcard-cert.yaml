@@ -1,0 +1,26 @@
+# One wildcard cert for the whole cluster, issued into kube-system and wired as
+# Traefik's default certificate. Every Ingress then gets TLS without its own
+# Certificate resource -- and without tripping Let's Encrypt's duplicate-cert limit.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-yehudabriskman-com
+  namespace: kube-system
+spec:
+  secretName: wildcard-yehudabriskman-com-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: yehudabriskman.com
+  dnsNames:
+    - yehudabriskman.com
+    - "*.yehudabriskman.com"
+---
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  defaultCertificate:
+    secretName: wildcard-yehudabriskman-com-tls

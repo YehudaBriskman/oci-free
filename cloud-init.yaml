@@ -1,0 +1,55 @@
+#cloud-config
+# Rendered by Terraform templatefile(). Literal shell interpolations must be doubled.
+timezone: Asia/Jerusalem
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - ca-certificates
+  - iptables-persistent
+  - netfilter-persistent
+  - unattended-upgrades
+  - htop
+  - jq
+  - git
+
+write_files:
+  # Exit-node and subnet-router duty both require forwarding.
+  - path: /etc/sysctl.d/99-tailscale.conf
+    content: |
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+
+  - path: /usr/local/sbin/oci-open-tailscale-ports.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Oracle's Ubuntu images ship an iptables ruleset that drops nearly everything
+      # except port 22, independent of VCN security lists. This is the single most
+      # common reason a service on an OCI box is unreachable.
+      set -euo pipefail
+      iptables -C INPUT -i tailscale0 -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT 1 -i tailscale0 -j ACCEPT
+      iptables -C INPUT -p udp --dport 41641 -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT 1 -p udp --dport 41641 -j ACCEPT
+      netfilter-persistent save
+
+runcmd:
+  - sysctl --system
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - /usr/local/sbin/oci-open-tailscale-ports.sh
+  - |
+    tailscale up \
+      --authkey='${ts_authkey}' \
+      --hostname='${ts_hostname}' \
+      --ssh \
+      %{ if ts_exit_node ~}--advertise-exit-node \
+      %{ endif ~}--accept-dns=false
+  # --accept-dns=false is deliberate: MagicDNS is disabled on this tailnet.
+  - systemctl enable --now unattended-upgrades
+  - |
+    echo "cloud-init finished at $(date -Is)" > /var/log/oci-bootstrap-done
+    tailscale ip -4 >> /var/log/oci-bootstrap-done 2>&1 || true
+
+final_message: "bootstrap complete after $UPTIME seconds"

@@ -1,0 +1,34 @@
+# Single-user instance: SQLite instead of the chart's default Postgres/HA subcharts.
+# Saves ~200 MB and one more thing to back up.
+redis-cluster: {enabled: false}
+redis:         {enabled: false}
+postgresql:    {enabled: false}
+postgresql-ha: {enabled: false}
+
+persistence:
+  enabled: true
+  storageClass: local-path
+  size: 20Gi
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits:   {memory: 1Gi}
+
+service:
+  http: {type: ClusterIP, port: 3000}
+  ssh:  {type: ClusterIP, port: 22}
+
+gitea:
+  config:
+    database:
+      DB_TYPE: sqlite3
+    session:
+      PROVIDER: memory
+    cache:
+      ADAPTER: memory
+    queue:
+      TYPE: level
+    service:
+      DISABLE_REGISTRATION: true      # single-user; open signup on a public box is a liability
+    actions:
+      ENABLED: true                   # required for the ARM runner

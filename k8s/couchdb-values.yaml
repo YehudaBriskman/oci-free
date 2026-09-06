@@ -1,0 +1,34 @@
+# Single-node CouchDB for Obsidian LiveSync.
+# LiveSync needs CORS enabled and a large max_http_request_size, or big notes
+# and attachments fail to replicate.
+clusterSize: 1
+couchdbConfig:
+  couchdb:
+    uuid: "190bb9c1c9794777a74b25b5b57937b8"
+    single_node: true
+  chttpd:
+    require_valid_user: true
+    max_http_request_size: 4294967296
+    bind_address: 0.0.0.0
+  chttpd_auth:
+    require_valid_user: true
+  httpd:
+    enable_cors: true
+    WWW-Authenticate: 'Basic realm="couchdb"'
+  cors:
+    origins: "app://obsidian.md,capacitor://localhost,http://localhost"
+    credentials: "true"
+    headers: "accept, authorization, content-type, origin, referer"
+    methods: "GET,PUT,POST,HEAD,DELETE"
+
+persistentVolume:
+  enabled: true
+  storageClass: local-path
+  size: 10Gi
+
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits:   {memory: 512Mi}
+
+service:
+  type: ClusterIP

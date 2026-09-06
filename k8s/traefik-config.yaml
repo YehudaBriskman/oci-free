@@ -1,0 +1,21 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    # externalTrafficPolicy: Local preserves the real client source IP.
+    # With the default (Cluster) kube-proxy SNATs it, so every request looks like
+    # it came from inside the cluster and any IP-based allowlist blocks everyone.
+    service:
+      spec:
+        externalTrafficPolicy: Local
+    ports:
+      web:
+        http:
+          redirections:
+            entryPoint:
+              to: websecure
+              scheme: https
+              permanent: true

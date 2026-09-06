@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: oauth2-proxy, namespace: auth}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: oauth2-proxy}}
+  template:
+    metadata: {labels: {app: oauth2-proxy}}
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          args:
+            - --provider=github
+            # The allowlist. Without it ANY GitHub account on earth could sign in.
+            - --github-user=YehudaBriskman
+            - --email-domain=*
+            - --scope=user:email
+            - --http-address=0.0.0.0:4180
+            - --redirect-url=https://auth.yehudabriskman.com/oauth2/callback
+            # Cookie is set on the parent domain so one login covers every subdomain.
+            - --cookie-domain=.yehudabriskman.com
+            - --whitelist-domain=.yehudabriskman.com
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-expire=168h
+            # Required so oauth2-proxy trusts Traefik's X-Forwarded-* headers and can
+            # reconstruct the original URL to send you back to after login.
+            - --reverse-proxy=true
+            - --set-xauthrequest=true
+            # In forward-auth mode there is no real upstream; 202 = "you're allowed".
+            - --upstream=static://202
+            # Without this oauth2-proxy serves an interstitial "Sign in with GitHub"
+            # page (HTTP 403); with it, unauthenticated requests 302 straight to GitHub.
+            - --skip-provider-button=true
+          env:
+            - {name: OAUTH2_PROXY_CLIENT_ID,     valueFrom: {secretKeyRef: {name: oauth2-proxy, key: client-id}}}
+            - {name: OAUTH2_PROXY_CLIENT_SECRET, valueFrom: {secretKeyRef: {name: oauth2-proxy, key: client-secret}}}
+            - {name: OAUTH2_PROXY_COOKIE_SECRET, valueFrom: {secretKeyRef: {name: oauth2-proxy, key: cookie-secret}}}
+          ports: [{containerPort: 4180}]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits:   {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: oauth2-proxy, namespace: auth}
+spec:
+  selector: {app: oauth2-proxy}
+  ports: [{port: 4180, targetPort: 4180}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-proxy
+  namespace: auth
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  rules:
+    - host: auth.yehudabriskman.com
+      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: oauth2-proxy, port: {number: 4180}}}}]}
+---
+# Pointing ForwardAuth at "/" (not /oauth2/auth) matters: the root issues a 302 to
+# GitHub when unauthenticated, and Traefik passes non-2xx responses straight through.
+# /oauth2/auth would return a bare 401 and you'd see an error page instead of a login.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: github-auth, namespace: monitoring}
+spec:
+  forwardAuth:
+    address: http://oauth2-proxy.auth.svc.cluster.local:4180/
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
