@@ -77,6 +77,36 @@ control anyway — it requires tailnet membership, not merely a GitHub account.
   those kube-prometheus-stack scrape jobs are disabled to avoid permanent
   `TargetDown` alerts.
 
+## Portfolio images
+
+Built **natively on the ARM node** and imported straight into k3s containerd —
+there is no registry, so `imagePullPolicy: Never` is required or kubelet will try
+Docker Hub and fail.
+
+```sh
+tar czf - -C ~/projects/personal/portfolio_site --exclude=node_modules --exclude=dist \
+  --exclude=.git --exclude=.env glassglow-folio-space backend \
+  | ssh ubuntu@100.79.242.82 'rm -rf ~/portfolio && mkdir -p ~/portfolio && tar xzf - -C ~/portfolio'
+ssh ubuntu@100.79.242.82 'cd ~/portfolio &&
+  sudo docker build -t portfolio-web:latest ./glassglow-folio-space &&
+  sudo docker build -t portfolio-api:latest ./backend &&
+  for i in portfolio-web portfolio-api; do
+    sudo docker save $i:latest | sudo k3s ctr -n k8s.io images import -; done'
+kubectl -n prod rollout restart deploy/web deploy/api
+```
+
+Source is shipped over SSH rather than cloned: the node cannot reach
+`git.yehudabriskman.com`, because traffic to its own tailnet IP does not present a
+`100.64.0.0/10` source address and the allowlist rejects it. The same constraint
+blocks CI from cloning — unsolved, and the reason builds are still manual.
+
+`kubectl create secret --from-env-file` does **not** strip quotes the way `dotenv`
+does, so `CONTACT_TO="a@b.com"` arrives including the quote characters and fails
+validation. Normalise before creating the secret.
+
+The frontend's `nginx.conf` proxies `/api/` to `http://api:5000`, so the backend
+Service must be named exactly `api` in the same namespace.
+
 ## Rebuild
 
 ```sh

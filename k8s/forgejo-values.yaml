@@ -20,6 +20,12 @@ service:
 
 gitea:
   config:
+    server:
+      # Without these Forgejo advertises git.example.com in clone URLs, webhooks
+      # and Actions callbacks, and nothing external resolves correctly.
+      DOMAIN: git.yehudabriskman.com
+      SSH_DOMAIN: git.yehudabriskman.com
+      ROOT_URL: https://git.yehudabriskman.com/
     database:
       DB_TYPE: sqlite3
     session:

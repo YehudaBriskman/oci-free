@@ -35,7 +35,27 @@ grafana:
     requests: {cpu: 50m, memory: 128Mi}
     limits:   {memory: 384Mi}
   service:
-    type: ClusterIP   # tailnet-only via port-forward for now; real ingress lands with the prod area
+    type: ClusterIP   # reached only through Traefik + oauth2-proxy
+
+  # Identity comes from oauth2-proxy, so Grafana's own login form is redundant.
+  # Traefik overwrites X-Auth-Request-Email from the auth response, so a client
+  # cannot forge it -- verified by test, not assumed.
+  grafana.ini:
+    auth:
+      disable_login_form: true
+      signout_redirect_url: https://auth.yehudabriskman.com/oauth2/sign_out
+    auth.proxy:
+      enabled: true
+      header_name: X-Auth-Request-Email
+      header_property: email
+      auto_sign_up: true
+      sync_ttl: 60
+      # Only the in-cluster pod network may assert identity headers.
+      whitelist: 10.42.0.0/16
+    auth.anonymous:
+      enabled: false
+    users:
+      auto_assign_org_role: Admin
 
 prometheusOperator:
   resources:

@@ -15,7 +15,9 @@ spec:
             # The allowlist. Without it ANY GitHub account on earth could sign in.
             - --github-user=YehudaBriskman
             - --email-domain=*
-            - --scope=user:email
+            # read:org is required even though we allowlist by username: the GitHub
+            # provider calls /user/orgs while building the session and 403s without it.
+            - --scope=user:email read:org
             - --http-address=0.0.0.0:4180
             - --redirect-url=https://auth.yehudabriskman.com/oauth2/callback
             # Cookie is set on the parent domain so one login covers every subdomain.
