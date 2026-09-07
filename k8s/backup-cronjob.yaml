@@ -1,0 +1,83 @@
+# Nightly content backup.
+#
+# Scope, stated honestly: this writes to a PVC on the SAME disk as the data it
+# backs up. It protects against application-level loss — a bad migration, a
+# dropped database, a fat-fingered delete — and against PVC deletion, since the
+# copy lives in a different claim. It does NOT protect against disk failure or
+# the node going away. That needs an offsite copy, which is tracked separately.
+apiVersion: v1
+kind: Namespace
+metadata: {name: backup}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: backup-store, namespace: backup}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources: {requests: {storage: 8Gi}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: couchdb-backup, namespace: backup}
+spec:
+  schedule: "17 2 * * *"          # 02:17, off the hour to avoid the thundering herd
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # local-path volumes mount root-owned and this image runs as uid 100,
+          # so without fsGroup the very first write fails.
+          securityContext:
+            runAsUser: 100
+            runAsGroup: 101
+            fsGroup: 101
+          containers:
+            - name: dump
+              image: curlimages/curl:8.11.1
+              env:
+                - name: COUCH_USER
+                  valueFrom: {secretKeyRef: {name: couchdb-backup-creds, key: username}}
+                - name: COUCH_PASS
+                  valueFrom: {secretKeyRef: {name: couchdb-backup-creds, key: password}}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  HOST=http://couchdb-svc-couchdb.obsidian.svc.cluster.local:5984
+                  STAMP=$(date -u +%Y-%m-%d)
+                  OUT=/backup/couchdb/$STAMP
+                  mkdir -p "$OUT"
+                  echo "backing up to $OUT"
+                  if ! DBS=$(curl -sf --max-time 20 -u "$COUCH_USER:$COUCH_PASS" "$HOST/_all_dbs"); then
+                    echo "ERROR: cannot reach CouchDB"; exit 1
+                  fi
+                  echo "$DBS" | tr -d '[]"' | tr ',' '\n' | while read -r db; do
+                    [ -z "$db" ] && continue
+                    case "$db" in _*) continue;; esac
+                    echo "  $db"
+                    curl -sf -u "$COUCH_USER:$COUCH_PASS" \
+                      "$HOST/$db/_all_docs?include_docs=true" -o "$OUT/$db.json"
+                  done
+                  # An empty result is only an error if there was something to copy.
+                  # With no user databases yet there is legitimately nothing, and
+                  # failing on that would just train us to ignore the alert.
+                  if [ -z "$(ls -A "$OUT" 2>/dev/null)" ]; then
+                    echo "no user databases present — nothing to back up"
+                    rmdir "$OUT" 2>/dev/null || true
+                    exit 0
+                  fi
+                  du -sh "$OUT"
+                  # Keep 14 days.
+                  cd /backup/couchdb && ls -1dt */ 2>/dev/null | tail -n +15 | xargs -r rm -rf
+                  echo "retained: $(ls -1d /backup/couchdb/*/ 2>/dev/null | wc -l) snapshots"
+              volumeMounts:
+                - {name: store, mountPath: /backup}
+          volumes:
+            - name: store
+              persistentVolumeClaim: {claimName: backup-store}

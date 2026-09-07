@@ -1,0 +1,66 @@
+# Nightly Forgejo dump: repositories, database and config in one archive.
+# Uses `forgejo dump` rather than tarring the data directory, because the SQLite
+# file is being written to live and a raw copy can be torn. Same-disk caveat as
+# the CouchDB job — this is protection against application-level loss and PVC
+# deletion, not against losing the node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: forgejo-backup-store, namespace: forgejo}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources: {requests: {storage: 10Gi}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: forgejo-backup, namespace: forgejo}
+spec:
+  schedule: "43 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+          containers:
+            - name: dump
+              image: code.forgejo.org/forgejo/forgejo:15.0.7-rootless
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  STAMP=$(date -u +%Y-%m-%d)
+                  cd /backup
+                  # The rootless image has no /tmp/gitea and dump will not create
+                  # it; point the scratch space at the backup volume instead.
+                  mkdir -p /backup/tmp
+                  echo "dumping forgejo -> /backup/forgejo-$STAMP.zip"
+                  forgejo dump \
+                    --config /data/gitea/conf/app.ini \
+                    --file "/backup/forgejo-$STAMP.zip" \
+                    --tempdir /backup/tmp \
+                    --type zip
+                  rm -rf /backup/tmp/*
+                  ls -lh "/backup/forgejo-$STAMP.zip"
+                  # A dump that produced almost nothing is a failure wearing a
+                  # success exit code. 100 KB is far below a real instance.
+                  SZ=$(stat -c%s "/backup/forgejo-$STAMP.zip")
+                  if [ "$SZ" -lt 102400 ]; then
+                    echo "ERROR: dump is only $SZ bytes"; exit 1
+                  fi
+                  ls -1t /backup/forgejo-*.zip 2>/dev/null | tail -n +15 | xargs -r rm -f
+                  echo "retained: $(ls -1 /backup/forgejo-*.zip 2>/dev/null | wc -l) dumps"
+              env:
+                - {name: GITEA_WORK_DIR, value: /data}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+                - {name: store, mountPath: /backup}
+          volumes:
+            - name: data
+              persistentVolumeClaim: {claimName: gitea-shared-storage}
+            - name: store
+              persistentVolumeClaim: {claimName: forgejo-backup-store}
