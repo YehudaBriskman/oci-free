@@ -1,0 +1,63 @@
+# Admin gate for admin.yehudabriskman.com.
+#
+# Order matters and is the whole point:
+#   1. strip-identity      remove anything the CLIENT claims about itself
+#   2. github-auth         ask oauth2-proxy who this actually is
+#   3. inject-proxy-secret stamp proof that the request came through THIS router
+#
+# Without step 1, a client could send its own X-Auth-Request-User. Without step
+# 3, a request aimed straight at the public ingress would reach the same API
+# Service carrying whatever headers it liked. The API requires both the secret
+# and the expected login, so neither alone is enough.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: strip-identity, namespace: prod}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Auth-Request-User: ""
+      X-Auth-Request-Email: ""
+      X-Admin-Proxy-Secret: ""
+---
+# Traefik Middlewares are namespace-scoped, so the one in `monitoring` cannot be
+# referenced from a prod Ingress. This is the same shape, recreated here.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: github-auth, namespace: prod}
+spec:
+  forwardAuth:
+    address: http://oauth2-proxy.auth.svc.cluster.local:4180/
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: inject-proxy-secret, namespace: prod}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Admin-Proxy-Secret: "__ADMIN_PROXY_SECRET__"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin
+  namespace: prod
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      prod-strip-identity@kubernetescrd,prod-github-auth@kubernetescrd,prod-inject-proxy-secret@kubernetescrd
+spec:
+  rules:
+    - host: admin.yehudabriskman.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: api, port: {number: 5000}}}
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: web, port: {number: 80}}}

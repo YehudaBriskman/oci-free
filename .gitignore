@@ -18,3 +18,13 @@ tfplan
 
 # Forgejo API token
 .forgejo-token
+
+# CouchDB application user password
+.couch-api-pw
+
+# SMTP app password
+.smtp-pw
+
+# Traefik proof-of-transit value (also lives in the rendered middleware)
+.admin-proxy-secret
+k8s/admin-gate.rendered.yaml
