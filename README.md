@@ -79,26 +79,63 @@ control anyway — it requires tailnet membership, not merely a GitHub account.
 
 ## Portfolio images
 
-Built **natively on the ARM node** and imported straight into k3s containerd —
-there is no registry, so `imagePullPolicy: Never` is required or kubelet will try
-Docker Hub and fail.
+Built in the site repository's CI on every push to `main`, published to GHCR
+multi-arch, and rolled out here by the same pipeline:
 
-```sh
-tar czf - -C ~/projects/personal/portfolio_site --exclude=node_modules --exclude=dist \
-  --exclude=.git --exclude=.env glassglow-folio-space backend \
-  | ssh ubuntu@100.79.242.82 'rm -rf ~/portfolio && mkdir -p ~/portfolio && tar xzf - -C ~/portfolio'
-ssh ubuntu@100.79.242.82 'cd ~/portfolio &&
-  sudo docker build -t portfolio-web:latest ./glassglow-folio-space &&
-  sudo docker build -t portfolio-api:latest ./backend &&
-  for i in portfolio-web portfolio-api; do
-    sudo docker save $i:latest | sudo k3s ctr -n k8s.io images import -; done'
-kubectl -n prod rollout restart deploy/web deploy/api
+```
+push to main ──▶ build + test ──▶ ghcr.io/…/{web,api}:<sha> ──▶ kubectl set image
+                                                                      │
+                                                 rollout status ──▶ curl the site
+                                                                      │
+                                                        not 200? ──▶ rollout undo
 ```
 
-Source is shipped over SSH rather than cloned: the node cannot reach
-`git.yehudabriskman.com`, because traffic to its own tailnet IP does not present a
-`100.64.0.0/10` source address and the allowlist rejects it. The same constraint
-blocks CI from cloning — unsolved, and the reason builds are still manual.
+The tag is a commit sha, not `:latest`, so a rollout either lands a specific
+build or fails. The API server stays off the internet; the runner joins the
+tailnet for the length of the job with an ephemeral node.
+
+### What this replaced, and why it had to
+
+`deploy-portfolio.sh` rsynced a laptop's **working directory** to the node,
+built there and imported into containerd — which is why the deployments pinned
+`imagePullPolicy: Never`. Two things were wrong with it. The live site could be
+running code that was never committed, and for six weeks it was. And it had
+stopped working altogether: the script still synced a frontend directory that
+had been renamed from `glassglow-folio-space` to `web`, so rsync failed on a
+path that no longer existed, `set -e` aborted the run before anything was
+built, and the site stayed six weeks old with nothing reporting it.
+
+The script is still here, with the path fixed, for when CI cannot reach the
+tailnet. It still ships a working directory, which is why it is the fallback
+rather than the route.
+
+The old note here said CI could not clone the repository — the node cannot
+reach `git.yehudabriskman.com`, because traffic to its own tailnet IP does not
+present a `100.64.0.0/10` source address and the allowlist rejects it. That is
+still true and no longer matters: nothing is built on the node, so nothing
+needs to clone anything there.
+
+### One-time setup
+
+Three secrets in the **site** repository, one in the cluster.
+
+1. **`TS_OAUTH_CLIENT_ID`** / **`TS_OAUTH_SECRET`** — a Tailscale OAuth client
+   with the `auth_keys` scope, plus an ACL grant letting `tag:ci` reach this
+   node.
+2. **`KUBECONFIG_B64`** — `base64 -w0 < kubeconfig`. Use a ServiceAccount
+   scoped to `get`/`patch` on the two deployments in `prod`, not the
+   cluster-admin kubeconfig: a rollout needs nothing more, and this credential
+   lives in someone else's storage.
+3. **`ghcr-pull`** in the cluster, because the packages are private:
+
+   ```sh
+   kubectl -n prod create secret docker-registry ghcr-pull \
+     --docker-server=ghcr.io --docker-username=<github-user> \
+     --docker-password=<PAT with read:packages>
+   ```
+
+A `production` environment in the site repository is where a required reviewer
+goes, if a human step before a live rollout is wanted.
 
 `kubectl create secret --from-env-file` does **not** strip quotes the way `dotenv`
 does, so `CONTACT_TO="a@b.com"` arrives including the quote characters and fails
