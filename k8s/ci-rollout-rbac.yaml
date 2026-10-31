@@ -1,0 +1,59 @@
+# The account CI rolls out with, and nothing else it can do.
+#
+# A rollout needs to read two Deployments and patch their image. That is the
+# whole job, so that is the whole grant. The alternative — handing the
+# cluster-admin kubeconfig to GitHub Actions — puts a credential that can do
+# anything to this cluster into a third party's secret storage, to perform an
+# operation that needs two verbs on two objects.
+#
+# Namespaced on purpose: a Role rather than a ClusterRole means this token
+# cannot see, let alone touch, anything outside `prod`.
+#
+#   kubectl apply -f k8s/ci-rollout-rbac.yaml
+#
+# Then build the kubeconfig for it with `k8s/ci-kubeconfig.sh`.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: ci-rollout, namespace: prod}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ci-rollout, namespace: prod}
+rules:
+  # `get` to read the current state, `patch` for `set image`, and `watch`
+  # because `rollout status` waits on the Deployment rather than polling it.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["web", "api"]
+    verbs: ["get", "patch", "watch"]
+  # `rollout status` also lists the ReplicaSets behind the Deployment to work
+  # out whether the new one is ready. Read-only, and it cannot be restricted
+  # by name because their names carry a generated suffix.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  # Enough to say *why* a rollout is stuck — an ImagePullBackOff is the most
+  # likely failure here and it is invisible without this.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ci-rollout, namespace: prod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-rollout}
+subjects:
+  - {kind: ServiceAccount, name: ci-rollout, namespace: prod}
+---
+# A token for it. Kubernetes 1.24 stopped minting these automatically, so the
+# Secret is declared explicitly; the control plane fills in the token.
+#
+# It does not expire, which is the trade for CI being able to use it without a
+# refresh flow. `kubectl -n prod delete secret ci-rollout-token` revokes it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ci-rollout-token
+  namespace: prod
+  annotations: {kubernetes.io/service-account.name: ci-rollout}
+type: kubernetes.io/service-account-token

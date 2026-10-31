@@ -122,10 +122,17 @@ Three secrets in the **site** repository, one in the cluster.
 1. **`TS_OAUTH_CLIENT_ID`** / **`TS_OAUTH_SECRET`** — a Tailscale OAuth client
    with the `auth_keys` scope, plus an ACL grant letting `tag:ci` reach this
    node.
-2. **`KUBECONFIG_B64`** — `base64 -w0 < kubeconfig`. Use a ServiceAccount
-   scoped to `get`/`patch` on the two deployments in `prod`, not the
-   cluster-admin kubeconfig: a rollout needs nothing more, and this credential
-   lives in someone else's storage.
+2. **`KUBECONFIG_B64`** — two commands, and never the cluster-admin
+   kubeconfig. A rollout needs `get`/`patch`/`watch` on two Deployments and
+   read on the Pods behind them; anything more is a credential that can do
+   anything to this cluster, sitting in a third party's secret storage.
+
+   ```sh
+   kubectl apply -f k8s/ci-rollout-rbac.yaml   # once
+   ./k8s/ci-kubeconfig.sh                      # prints the value to paste
+   ```
+
+   Revoke any time with `kubectl -n prod delete secret ci-rollout-token`.
 3. **`ghcr-pull`** in the cluster, because the packages are private:
 
    ```sh
