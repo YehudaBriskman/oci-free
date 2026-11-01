@@ -12,19 +12,29 @@
 # NODE_ENV, same Service names -- because a preprod that differs in shape only
 # tells you about itself. Three things differ, and each one is a decision:
 #
-# 1. WHO CAN REACH IT -- the tailnet, nobody else.
+# 1. WHO CAN REACH IT -- whoever can sign in, and nobody else.
 #    Unreleased work on a personal site does not belong on the public internet,
 #    and the damage is not only who reads it: Google indexes a second host
 #    serving the same content, which is a duplicate-content problem the site
-#    then has to live with long after the build is gone. So this follows the
-#    house pattern for `git.` and `couchdb.` -- Traefik `ipAllowList` on
-#    100.64.0.0/10, enforced at the proxy rather than by DNS, because Traefik
-#    routes on the Host header and anyone can send a header.
-#    The middleware itself lives in `tailnet-only-middleware.yaml` with the
-#    other namespaces' copies, so there is one file that answers "what is
-#    tailnet-gated". If it is missing, Traefik fails the router closed.
-#    `X-Robots-Tag` below is belt and braces, not the control: a crawler cannot
-#    reach this host at all. It is here so that the day somebody opens the host
+#    lives with long after the build is gone.
+#
+#    This began as the house pattern for `git.` and `couchdb.` -- a Traefik
+#    `ipAllowList` on 100.64.0.0/10 -- and that pattern does not work on this
+#    cluster and never has. k3s's ServiceLB masquerades every inbound
+#    connection, so Traefik receives a cluster address rather than the
+#    client's. Measured from a laptop at 100.108.35.26 on the tailnet, through
+#    a throwaway `whoami` behind this very Ingress:
+#
+#        RemoteAddr:      10.42.0.29:46158
+#        X-Forwarded-For: 10.42.0.1
+#
+#    So the gate is `github-auth`, the same forwardAuth that has been in front
+#    of the admin surface for fifty-five days. It asks who you are instead of
+#    where you came from, which is a question the rewrite cannot corrupt --
+#    and it is reachable from a phone, which the tailnet gate was not.
+#
+#    `X-Robots-Tag` below is belt and braces rather than the control: a crawler
+#    is stopped at the gate. It is here so that the day somebody opens the host
 #    up, the noindex is already on it rather than being the thing they forgot.
 #
 # 2. WHERE ITS MAIL GOES -- a sink in this namespace, never a real mailbox.
@@ -60,8 +70,40 @@ kind: Namespace
 metadata: {name: preprod}
 ---
 # Response headers, not a gate. See (1) in the header: the gate is the
-# `tailnet-only` ipAllowList, and this is what keeps a crawler out of the index
+# `github-auth` gate, and this is what keeps a crawler out of the index
 # on the day the gate is relaxed and nobody remembers this file.
+# Identity, not an address.
+#
+# This was an `ipAllowList` on 100.64.0.0/10, copied from `git.` and
+# `couchdb.`, and it could never have worked on this cluster. k3s's ServiceLB
+# masquerades every inbound connection, so what Traefik receives is a cluster
+# address and never the client's. Measured with a throwaway `whoami` behind
+# this same Ingress, from a laptop sitting at 100.108.35.26 on the tailnet:
+#
+#     RemoteAddr:      10.42.0.29:46158
+#     X-Forwarded-For: 10.42.0.1
+#
+# 10.42.0.1 is the node gateway. No tailnet range will ever match it, which is
+# why this host, `git.` and `couchdb.` all returned 403 to everyone. The same
+# measurement is why widening the range would be the wrong repair: every
+# request arrives as 10.42.0.1, so admitting it admits the whole internet.
+#
+# forwardAuth survives the rewrite because it asks who you are rather than
+# where you came from, and this exact middleware has been gating the admin
+# surface for fifty-five days. The cluster-wide fix for the allowlist — Traefik
+# on hostNetwork so it sees real client addresses — restarts the production
+# ingress and is a separate, scheduled change.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: github-auth, namespace: preprod}
+spec:
+  forwardAuth:
+    address: http://oauth2-proxy.auth.svc.cluster.local:4180/
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata: {name: noindex, namespace: preprod}
@@ -267,7 +309,7 @@ metadata:
     traefik.ingress.kubernetes.io/router.tls: "true"
     # Order matters only in that the allowlist should reject before anything
     # else runs. Middlewares are namespaced, hence the `preprod-` prefix.
-    traefik.ingress.kubernetes.io/router.middlewares: preprod-tailnet-only@kubernetescrd,preprod-noindex@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: preprod-github-auth@kubernetescrd,preprod-noindex@kubernetescrd
 spec:
   rules:
     - host: preprod.yehudabriskman.com
