@@ -1,3 +1,26 @@
+# DOES NOT WORK ON THIS CLUSTER, and has not for as long as it has existed.
+#
+# k3s's ServiceLB masquerades every inbound connection, so Traefik receives a
+# cluster address rather than the client's. Measured from a laptop at
+# 100.108.35.26 on the tailnet, through a throwaway `whoami` behind a real
+# Ingress:
+#
+#     RemoteAddr:      10.42.0.29:46158
+#     X-Forwarded-For: 10.42.0.1
+#
+# No tailnet range matches 10.42.0.1, so every host using this middleware
+# returns 403 to everybody — `git.`, `couchdb.` and, until it was moved to
+# `github-auth`, `preprod.`. It fails closed, so nothing is exposed; it is
+# inaccessibility rather than a leak.
+#
+# Widening the range is the wrong repair: every request arrives as 10.42.0.1,
+# so admitting that address admits the entire internet.
+#
+# The real fix is Traefik on hostNetwork, which makes it see real client
+# addresses and restores this middleware's intent everywhere at once — and it
+# restarts the production ingress, so it is a scheduled change rather than a
+# drive-by. Until then, treat anything gated by this as unreachable.
+#
 # Restricts a route to Tailscale's CGNAT range (100.64.0.0/10).
 # DNS alone is NOT a control -- Traefik routes on the Host header, so anyone could
 # reach these by sending the header to the public IP. This enforces it at the proxy.
