@@ -22,3 +22,14 @@ metadata: {name: tailnet-only, namespace: obsidian}
 spec:
   ipAllowList:
     sourceRange: ["100.64.0.0/10"]
+---
+# Preprod runs unreleased `main`. It is gated here rather than being public
+# because an unreleased build of the site has no audience on the internet, and
+# a second host serving the same pages is a duplicate-content problem the real
+# site inherits. See k8s/portfolio-preprod.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: tailnet-only, namespace: preprod}
+spec:
+  ipAllowList:
+    sourceRange: ["100.64.0.0/10"]

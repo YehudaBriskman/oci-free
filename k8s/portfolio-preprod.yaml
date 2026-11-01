@@ -1,0 +1,274 @@
+# Preprod: whatever is on `main` right now, somewhere it can be looked at.
+#
+# Releasing is a decision in this setup -- a merge to `main` builds and
+# publishes, and only a `v*` tag rolls out to `prod`. That is the right trade
+# for a live site and it leaves a gap: between a merge and a tag there is
+# nowhere to see the merged work running. This namespace is that somewhere. CI
+# rolls every push to `main` out here, by commit sha, with the same preflight,
+# the same rollout-status reporting and the same curl-then-undo check the
+# production rollout has.
+#
+# It is the same shape as prod on purpose -- same image, same nginx, same
+# NODE_ENV, same Service names -- because a preprod that differs in shape only
+# tells you about itself. Three things differ, and each one is a decision:
+#
+# 1. WHO CAN REACH IT -- the tailnet, nobody else.
+#    Unreleased work on a personal site does not belong on the public internet,
+#    and the damage is not only who reads it: Google indexes a second host
+#    serving the same content, which is a duplicate-content problem the site
+#    then has to live with long after the build is gone. So this follows the
+#    house pattern for `git.` and `couchdb.` -- Traefik `ipAllowList` on
+#    100.64.0.0/10, enforced at the proxy rather than by DNS, because Traefik
+#    routes on the Host header and anyone can send a header.
+#    The middleware itself lives in `tailnet-only-middleware.yaml` with the
+#    other namespaces' copies, so there is one file that answers "what is
+#    tailnet-gated". If it is missing, Traefik fails the router closed.
+#    `X-Robots-Tag` below is belt and braces, not the control: a crawler cannot
+#    reach this host at all. It is here so that the day somebody opens the host
+#    up, the noindex is already on it rather than being the thing they forgot.
+#
+# 2. WHERE ITS MAIL GOES -- a sink in this namespace, never a real mailbox.
+#    `/api/email` relays real SMTP in prod. Preprod must not, and the cheapest
+#    way to guarantee that is for it to have no credential that could: the
+#    secret points SMTP at `mail:1025`, which is a Mailpit that accepts
+#    anything and delivers nothing. The alternative -- an unroutable SMTP_HOST
+#    -- costs nothing but leaves the contact form permanently 500ing, which
+#    looks exactly like a real outage and makes the one path that most needs
+#    rehearsing the one path preprod cannot show. ~20 MiB to be able to send a
+#    test message and read it is worth it.
+#    Read what it caught with:
+#      kubectl -n preprod port-forward deploy/mail 8025:8025  # then :8025
+#
+# 3. WHERE ITS CONTENT LIVES -- its own CouchDB, with its own password.
+#    The database name is hardcoded in the API (`portfolio_content` in
+#    src/db/couch.ts), so "same server, different database" would have meant
+#    changing the application to make an infrastructure decision, and would
+#    have left preprod holding a credential that can reach the production
+#    store. A separate CouchDB in this namespace costs ~100 MiB and makes the
+#    requirement structural: preprod has no route to the prod database and no
+#    password for it. Seeding it is in the README.
+#
+# Everything here is applied by hand, like the rest of k8s/. CI only ever
+# patches the image on `web` and `api`; see ci-rollout-rbac.yaml for exactly
+# how much it is allowed to do in this namespace.
+#
+#   kubectl apply -f k8s/portfolio-preprod.yaml
+#   ./k8s/preprod-secrets.sh            # the two secrets this expects
+#
+apiVersion: v1
+kind: Namespace
+metadata: {name: preprod}
+---
+# Response headers, not a gate. See (1) in the header: the gate is the
+# `tailnet-only` ipAllowList, and this is what keeps a crawler out of the index
+# on the day the gate is relaxed and nobody remembers this file.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: noindex, namespace: preprod}
+spec:
+  headers:
+    customResponseHeaders:
+      X-Robots-Tag: "noindex, nofollow, noarchive"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: preprod}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      imagePullSecrets: [{name: ghcr-pull}]
+      containers:
+        - name: web
+          # `:latest` means the last *release*, and preprod is for what has not
+          # been released. It is here for the same reason it is in the prod
+          # manifest -- it is the tag a fresh `kubectl apply` lands on, i.e. a
+          # floor -- and CI overwrites it with the `main` commit sha within
+          # seconds of any push. An apply between merges therefore shows the
+          # last release until the next merge, which is a dull preprod rather
+          # than a wrong one.
+          image: ghcr.io/yehudabriskman/portfolio_site/web:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080}]
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits:   {memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /, port: 8080}
+            initialDelaySeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: preprod}
+spec:
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: preprod}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      imagePullSecrets: [{name: ghcr-pull}]
+      containers:
+        - name: api
+          image: ghcr.io/yehudabriskman/portfolio_site/api:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 5000}]
+          envFrom:
+            # Everything except the CouchDB credential. `preprod-secrets.sh`
+            # creates it; its keys are listed there.
+            - secretRef: {name: portfolio-api-env}
+            # The CouchDB user and password, from the one secret the CouchDB
+            # container below also reads. Two copies of a password in two
+            # secrets is two things to keep in step, and the failure when they
+            # drift is a 401 at the data layer that looks like the store being
+            # down. `envFrom` is ordered, so this one wins if both set a key.
+            - secretRef: {name: preprod-couch}
+          env:
+            - {name: NODE_ENV, value: production}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits:   {memory: 256Mi}
+---
+# The name "api" is load-bearing here exactly as it is in prod: the frontend's
+# nginx.conf proxies /api/ to http://api:5000, resolved per request through
+# kube-dns in this namespace.
+apiVersion: v1
+kind: Service
+metadata: {name: api, namespace: preprod}
+spec:
+  selector: {app: api}
+  ports: [{port: 5000, targetPort: 5000}]
+---
+# Preprod's own content store. See (3) in the header for why it is a second
+# CouchDB rather than a second database on the production one.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: couch-data, namespace: preprod}
+spec:
+  accessModes: [ReadWriteOnce]
+  # Fixture content and whatever gets replicated in to look at. The production
+  # store is on a 10Gi claim; this one does not need to be, and the block
+  # storage it comes out of (local-path, on the boot volume) is shared with
+  # everything else on the node.
+  resources: {requests: {storage: 2Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: couch, namespace: preprod}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. The claim is ReadWriteOnce and a rolling
+  # update starts the new pod before stopping the old one, so the new pod
+  # waits for a volume the old pod still holds and the rollout sits there
+  # until it times out.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: couch}}
+  template:
+    metadata: {labels: {app: couch}}
+    spec:
+      containers:
+        - name: couch
+          # The same image and the same two environment variables the local
+          # dev overlay uses, so a store that works locally works here.
+          image: couchdb:3.4
+          ports: [{containerPort: 5984}]
+          envFrom:
+            - secretRef: {name: preprod-couch}
+          volumeMounts:
+            - {name: data, mountPath: /opt/couchdb/data}
+          resources:
+            # The production CouchDB sits at ~100 MiB resident with the site's
+            # content in it. 128Mi requested, 512Mi ceiling so a compaction or
+            # a replication in does not get OOM-killed halfway.
+            requests: {cpu: 50m, memory: 128Mi}
+            limits:   {memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /_up, port: 5984}
+            initialDelaySeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: couch-data}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: couch, namespace: preprod}
+spec:
+  selector: {app: couch}
+  ports: [{port: 5984, targetPort: 5984}]
+---
+# The mail sink. See (2) in the header.
+#
+# No Ingress and no ServiceAccount: it holds every message preprod's contact
+# form has ever "sent", including whatever an operator typed into it, and the
+# way to read that is a port-forward from a machine already on the tailnet
+# rather than a seventh public hostname.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mail, namespace: preprod}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mail}}
+  template:
+    metadata: {labels: {app: mail}}
+    spec:
+      containers:
+        - name: mail
+          image: axllent/mailpit:v1.21
+          ports:
+            - {containerPort: 1025, name: smtp}
+            - {containerPort: 8025, name: ui}
+          env:
+            # nodemailer is always configured with an auth block, and if the
+            # server does not advertise AUTH it will happily send anyway -- but
+            # "happily" depends on the version, and a sink that rejects the
+            # login is a data-layer-looking failure in the one place this
+            # namespace exists to rehearse. Accept any credential instead, and
+            # accept it without TLS, which is what a cluster-internal hop is.
+            - {name: MP_SMTP_AUTH_ACCEPT_ANY, value: "true"}
+            - {name: MP_SMTP_AUTH_ALLOW_INSECURE, value: "true"}
+            # No volume: the store is in-memory and a restart loses it. These
+            # are test messages, and a ring buffer that cannot grow is the
+            # point on a node with 12 GB for everything.
+            - {name: MP_MAX_MESSAGES, value: "200"}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits:   {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mail, namespace: preprod}
+spec:
+  selector: {app: mail}
+  ports:
+    - {name: smtp, port: 1025, targetPort: 1025}
+    - {name: ui, port: 8025, targetPort: 8025}
+---
+# One host, and it is not public. `preprod.yehudabriskman.com` must be a
+# Cloudflare A record to the node's *tailnet* address (100.79.242.82),
+# DNS-only, exactly as `git.` and `couchdb.` are -- the wildcard record points
+# at the public IP, and with the allowlist on, a request arriving there has a
+# public source address and is refused. TLS needs nothing: the wildcard
+# certificate in kube-system is Traefik's default and already covers this name.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portfolio
+  namespace: preprod
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Order matters only in that the allowlist should reject before anything
+    # else runs. Middlewares are namespaced, hence the `preprod-` prefix.
+    traefik.ingress.kubernetes.io/router.middlewares: preprod-tailnet-only@kubernetescrd,preprod-noindex@kubernetescrd
+spec:
+  rules:
+    - host: preprod.yehudabriskman.com
+      http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: web, port: {number: 80}}}}]}
