@@ -4,7 +4,21 @@
 # invent twice.
 #
 #   kubectl apply -f k8s/portfolio-preprod.yaml
-#   ./k8s/preprod-secrets.sh
+#   GITHUB_TOKEN=ghp_... ./k8s/preprod-secrets.sh
+#
+# GITHUB_TOKEN is the one value this script cannot invent, and it is optional:
+# without it everything comes up and the contribution city draws its empty
+# state. Mint it at github.com/settings/tokens with `read:user` and nothing
+# else. To add it to a namespace that already has the secret, without
+# rotating the fifteen generated keys beside it:
+#
+#   kubectl -n preprod patch secret portfolio-api-env --type merge \
+#     -p "{\"stringData\":{\"GITHUB_TOKEN\":\"$GITHUB_TOKEN\"}}"
+#   kubectl -n preprod rollout restart deploy/api
+#
+# The restart is not optional: an envFrom change is invisible to a running
+# pod. The same two lines with `-n prod` do production, which needs this key
+# just as much and has never had it either.
 #
 # What it creates, and why each one is here rather than copied from prod:
 #
@@ -95,6 +109,24 @@ else
   #                 serve pages claiming to be production and the one thing a
   #                 preview is for, seeing what a page says about itself,
   #                 would be the thing it got wrong.
+  #   GITHUB_TOKEN  read from the operator's environment, because it is the
+  #                 one value here nothing can generate. The contribution
+  #                 city asks GitHub's GraphQL API for a year of
+  #                 `contributionsCollection`, and that endpoint has no
+  #                 anonymous mode at all -- unlike the REST calls in
+  #                 github.ts, which is why this is the first key that cannot
+  #                 be defaulted. Empty is a supported state and not a
+  #                 failure: the service returns a year with no days and an
+  #                 `error` string, the page draws its empty state, and
+  #                 `[contributions] GITHUB_TOKEN is not set` goes to the pod
+  #                 log. Scope needed is `read:user` and nothing else -- the
+  #                 year of public contributions is all it reads, so a token
+  #                 with repo write on it is strictly worse here.
+  #   GITHUB_LOGIN  whose year the city draws. Separate from
+  #                 ADMIN_GITHUB_LOGIN on purpose: one is an identity that
+  #                 may administer the site, the other is a public profile
+  #                 being read. They are the same person today and there is
+  #                 no reason the schema should assume it.
   #
   # `--from-literal` rather than `--from-env-file`: the env-file form does not
   # strip quotes the way dotenv does, and the prod secret was once created with
@@ -117,8 +149,15 @@ else
     --from-literal=ADMIN_GITHUB_LOGIN=YehudaBriskman \
     --from-literal=SITE_URL=https://preprod.yehudabriskman.com \
     --from-literal=WEB_ORIGIN=http://web \
+    --from-literal=GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+    --from-literal=GITHUB_LOGIN=YehudaBriskman \
     --dry-run=client -o yaml | kubectl apply -f -
   echo "  portfolio-api-env written"
+  [ -n "${GITHUB_TOKEN:-}" ] || cat >&2 <<'NOTOKEN'
+  NOTE: GITHUB_TOKEN was empty, so the contribution city will render its
+        empty state. That is a correct, deliberate fallback and not a crash --
+        see the head of this file for how to fill it in.
+NOTOKEN
 fi
 
 # ---------------------------------------------------------------- ghcr -------
