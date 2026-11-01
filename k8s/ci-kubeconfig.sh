@@ -10,9 +10,15 @@
 # should go from your terminal into GitHub's secret store and nowhere else —
 # not into a chat, a ticket, or a file that gets committed.
 #
-# What it grants is in ci-rollout-rbac.yaml: get/patch/watch on two Deployments
-# in `prod`, and read on the ReplicaSets and Pods behind them. Nothing else,
-# nowhere else. Revoke with `kubectl -n prod delete secret ci-rollout-token`.
+# What it grants is in ci-rollout-rbac.yaml: get/patch/watch on the `web` and
+# `api` Deployments in `prod` and in `preprod`, and read on the ReplicaSets and
+# Pods behind them. Nothing else, nowhere else. Revoke with
+# `kubectl -n prod delete secret ci-rollout-token`.
+#
+# One token covers both namespaces because preprod binds this same account, so
+# adding preprod did not add a credential to rotate. The context below still
+# defaults to `prod`; every call in the pipeline passes `-n` explicitly, which
+# is what makes one kubeconfig serve two environments.
 set -euo pipefail
 
 NS=prod

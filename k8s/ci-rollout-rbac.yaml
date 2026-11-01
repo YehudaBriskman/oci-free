@@ -7,7 +7,17 @@
 # operation that needs two verbs on two objects.
 #
 # Namespaced on purpose: a Role rather than a ClusterRole means this token
-# cannot see, let alone touch, anything outside `prod`.
+# cannot see, let alone touch, anything outside the namespaces named below.
+#
+# It now rolls out to two of them -- `prod` on a tag, `preprod` on every push
+# to `main`. That is one ServiceAccount with a second Role and a second
+# RoleBinding, not a ClusterRole: a ClusterRole scoped to the same verbs would
+# have been shorter to write and would also have granted them in `monitoring`,
+# `forgejo`, `obsidian` and `kube-system`, where "patch any Deployment named
+# api or web" happens to match nothing today and is a promise about the future
+# nobody made. A RoleBinding can name a subject from another namespace, so
+# `preprod` binds the existing `prod/ci-rollout` account rather than minting a
+# second token for CI to hold.
 #
 #   kubectl apply -f k8s/ci-rollout-rbac.yaml
 #
@@ -41,6 +51,37 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata: {name: ci-rollout, namespace: prod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-rollout}
+subjects:
+  - {kind: ServiceAccount, name: ci-rollout, namespace: prod}
+---
+# The same two verbs on the same two names, in preprod. Duplicated rather than
+# shared because a Role cannot span namespaces, and the duplication is the
+# thing that keeps the grant readable: whoever asks "what can CI do in
+# preprod" gets the answer from one object instead of an intersection.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ci-rollout, namespace: preprod}
+rules:
+  # `web` and `api` only. Preprod also runs `couch` and `mail`, and CI has no
+  # business patching either -- it ships images of the site, and those two are
+  # the namespace's furniture.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["web", "api"]
+    verbs: ["get", "patch", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# The subject is the account in `prod`. One token, two namespaces, so there is
+# still exactly one credential in GitHub's secret store to rotate or revoke.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ci-rollout, namespace: preprod}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-rollout}
 subjects:
   - {kind: ServiceAccount, name: ci-rollout, namespace: prod}

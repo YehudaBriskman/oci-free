@@ -54,12 +54,24 @@ k8s/                 Manifests + Helm values, applied against context `oci-free`
 | `auth.` | public | oauth2-proxy itself |
 | `git.` | tailnet only | Traefik `ipAllowList` on `100.64.0.0/10` |
 | `couchdb.` | tailnet only | same, then CouchDB basic auth |
+| `preprod.` | tailnet only | same, plus `X-Robots-Tag: noindex` |
 
 SSH and the Kubernetes API are never exposed publicly; both go over Tailscale.
 
 Forgejo and CouchDB cannot sit behind the OAuth proxy: git can't complete a browser
 redirect, and Obsidian LiveSync uses basic auth. Tailnet restriction is the stronger
 control anyway — it requires tailnet membership, not merely a GitHub account.
+
+`preprod.` is tailnet-only for a different reason: not that the OAuth proxy
+cannot gate it, but that an unreleased build of the site has no audience on the
+internet. The cost of getting that wrong is not only who reads it — a second
+public host serving the same pages is a duplicate-content problem the real site
+inherits, and an unreleased draft that gets indexed is a URL somebody has to go
+and retract. The `noindex` header is belt and braces behind the allowlist, for
+the day the host is opened up and nobody remembers to add it. It is a response
+header rather than a `robots.txt`, deliberately: the static `robots.txt` the
+frontend ships says `Allow: /`, and a crawler must be allowed to fetch a page
+in order to be told not to index it.
 
 ## Gotchas paid for the hard way
 
@@ -83,16 +95,89 @@ Built in the site repository's CI on every push to `main`, published to GHCR
 multi-arch, and rolled out here by the same pipeline:
 
 ```
-push to main ──▶ build + test ──▶ ghcr.io/…/{web,api}:<sha> ──▶ kubectl set image
-                                                                      │
-                                                 rollout status ──▶ curl the site
-                                                                      │
-                                                        not 200? ──▶ rollout undo
+push to main ──▶ build + test ──▶ ghcr.io/…:<sha> ──▶ set image ──▶ ns preprod
+push a tag   ──▶ build + test ──▶ ghcr.io/…:<sha> ──▶ set image ──▶ ns prod
+                                                            │
+                                       rollout status ──▶ curl that environment
+                                                            │
+                                              not 200? ──▶ rollout undo
 ```
 
 The tag is a commit sha, not `:latest`, so a rollout either lands a specific
 build or fails. The API server stays off the internet; the runner joins the
 tailnet for the length of the job with an ephemeral node.
+
+`:latest` means the last *release* and nothing else. It is what a fresh
+`kubectl apply` of either manifest lands on, so if it moved on every merge an
+apply between releases would quietly put unreleased code on the live site.
+Preprod does not change that: it rolls out the sha like prod does, and writes
+no tag at all.
+
+### Preprod
+
+`preprod.yehudabriskman.com` is the same two Deployments in their own namespace
+on their own tailnet-only host, carrying whatever is on `main`. It exists
+because releasing is a decision here, and that leaves a gap between a merge and
+a tag where merged work is running nowhere anybody can look at it.
+
+Three things differ from prod, each one in `k8s/portfolio-preprod.yaml` with
+the reasoning next to it:
+
+- **Reachable from the tailnet only**, as `git.` and `couchdb.` are. Needs a
+  Cloudflare A record for `preprod` pointing at the node's *tailnet* address,
+  `100.79.242.82`, DNS-only — the wildcard record points at the public IP, and
+  a request arriving there has a public source address and is refused by the
+  allowlist. The wildcard certificate already covers the name, so TLS needs
+  nothing.
+- **Its mail goes to a sink**, a Mailpit in the namespace that accepts any
+  login and delivers nothing. Preprod holds no mail credential that could
+  reach a real mailbox, and its `CONTACT_TO` is in `.invalid`. Read what it
+  caught with `kubectl -n preprod port-forward deploy/mail 8025:8025`.
+- **Its content is its own CouchDB**, with a password generated into the
+  namespace. The database name is hardcoded in the API, so "same server,
+  different database" would have meant changing the application to make an
+  infrastructure decision — and would have left preprod holding a credential
+  that can write the production store.
+
+What it costs the node, measured rather than estimated: 100m CPU and 256Mi of
+requests, against 750m/1964Mi already requested out of 2 OCPU and 11.6Gi. Real
+resident use is about 145Mi — web and api are 3Mi and 20Mi in prod today,
+CouchDB is 102Mi, Mailpit is some tens. That takes requested CPU from 37% to
+roughly 43% and requested memory from 16% to 18%; actual memory goes from 47%
+to about 48%. It fits, and the headroom that matters is CPU during a
+simultaneous image pull on both namespaces rather than anything steady-state.
+Nothing here moves the idle-reclamation numbers in the wrong direction —
+memory is the only lever Oracle actually measures, and this adds to it.
+
+```sh
+kubectl apply -f k8s/portfolio-preprod.yaml \
+               -f k8s/tailnet-only-middleware.yaml \
+               -f k8s/ci-rollout-rbac.yaml
+./k8s/preprod-secrets.sh        # generates what it needs; copies ghcr-pull
+```
+
+#### Seeding preprod
+
+The store starts empty, and an empty store is the one state the notes surface
+can only show as an error card. Either fixture content from the site
+repository, which is what the local stack uses:
+
+```sh
+kubectl -n preprod port-forward svc/couch 5985:5984
+COUCHDB_URL=http://127.0.0.1:5985 \
+COUCHDB_PASSWORD=$(kubectl -n preprod get secret preprod-couch \
+                     -o jsonpath='{.data.COUCHDB_PASSWORD}' | base64 -d) \
+  node backend/scripts/seed-dev-content.mjs
+```
+
+That script refuses any non-loopback host on purpose — it writes documents with
+"Fixture" in the title — which is why this goes through a port-forward rather
+than at the Service directly.
+
+Or replicate the real content in, one way, when what needs looking at is a
+change to how existing posts render. Replicate *from* prod *to* preprod and
+never the reverse; the preprod credential cannot write the production store,
+which is the backstop rather than the plan.
 
 ### What this replaced, and why it had to
 
@@ -123,16 +208,20 @@ Three secrets in the **site** repository, one in the cluster.
    with the `auth_keys` scope, plus an ACL grant letting `tag:ci` reach this
    node.
 2. **`KUBECONFIG_B64`** — two commands, and never the cluster-admin
-   kubeconfig. A rollout needs `get`/`patch`/`watch` on two Deployments and
-   read on the Pods behind them; anything more is a credential that can do
-   anything to this cluster, sitting in a third party's secret storage.
+   kubeconfig. A rollout needs `get`/`patch`/`watch` on the `web` and `api`
+   Deployments and read on the Pods behind them, in `prod` and in `preprod`;
+   anything more is a credential that can do anything to this cluster, sitting
+   in a third party's secret storage.
 
    ```sh
    kubectl apply -f k8s/ci-rollout-rbac.yaml   # once
    ./k8s/ci-kubeconfig.sh                      # prints the value to paste
    ```
 
-   Revoke any time with `kubectl -n prod delete secret ci-rollout-token`.
+   One token covers both namespaces: `preprod` binds the same ServiceAccount
+   with its own Role, rather than a ClusterRole that would have granted the
+   same verbs in `monitoring`, `forgejo` and `kube-system` too. Revoke any
+   time with `kubectl -n prod delete secret ci-rollout-token`.
 3. **`ghcr-pull`** in the cluster, because the packages are private:
 
    ```sh
@@ -141,15 +230,31 @@ Three secrets in the **site** repository, one in the cluster.
      --docker-password=<PAT with read:packages>
    ```
 
+   `preprod` needs it too; `k8s/preprod-secrets.sh` copies this one rather
+   than minting a second. It is a read-only registry token for images both
+   namespaces pull, so a second one would be a second thing to rotate for no
+   isolation — unlike `portfolio-api-env`, which that script builds from
+   scratch and never copies.
+
 A `production` environment in the site repository is where a required reviewer
-goes, if a human step before a live rollout is wanted.
+goes, if a human step before a live rollout is wanted. If the three secrets
+above are ever moved from repository secrets onto that environment, they must
+be added to the `preprod` environment too, or every merge fails with an empty
+kubeconfig.
 
 `kubectl create secret --from-env-file` does **not** strip quotes the way `dotenv`
 does, so `CONTACT_TO="a@b.com"` arrives including the quote characters and fails
 validation. Normalise before creating the secret.
 
 The frontend's `nginx.conf` proxies `/api/` to `http://api:5000`, so the backend
-Service must be named exactly `api` in the same namespace.
+Service must be named exactly `api` in the same namespace. That is also why
+`preprod` repeats the names rather than suffixing them.
+
+The API's `WEB_ORIGIN` defaults to `http://web`, which is the Service's port 80
+forwarding to the container's 8080. That is correct in a namespace and wrong
+anywhere there is no Service — under Docker Compose it has to be
+`http://web:8080`, or every per-URL head quietly falls back to the plain SPA
+shell and the page still loads with the wrong `<title>`.
 
 ## Rebuild
 
