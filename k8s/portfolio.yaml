@@ -35,6 +35,27 @@ spec:
           # reschedule into a registry round trip the node does not need.
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8080}]
+          env:
+            # The API's host, fully qualified, and the qualification is the
+            # entire reason this variable exists.
+            #
+            # nginx.conf.template proxies every /api/ request and all four
+            # rendered SEO routes through one `set $api_upstream` line,
+            # resolved per request by `resolver`. nginx takes nameservers from
+            # /etc/resolv.conf and ignores its `search` list entirely, so the
+            # bare Service name `api` is looked up as an absolute name, has no
+            # record, and every /api/ request answers 502 with
+            # `api could not be resolved (3: Host not found)`. A shell in the
+            # same pod resolves `api` because libc appends the search domains;
+            # nginx never does. Measured in preprod: 502 through nginx against
+            # 200 for the identical path straight at the api Service.
+            #
+            # The image defaults this to `api`, which is correct under Docker
+            # Compose and wrong here, so it is set per namespace rather than
+            # baked in. `.prod.` and not `.preprod.` — the namespace is part of
+            # the name, and getting it wrong here points production's frontend
+            # at preprod's API.
+            - {name: NGINX_API_HOST, value: api.prod.svc.cluster.local}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
             limits:   {memory: 128Mi}
@@ -74,7 +95,11 @@ spec:
             limits:   {memory: 256Mi}
 ---
 # The name "api" is load-bearing: the frontend's nginx.conf proxies /api/ to
-# http://api:5000/api/, so this Service must keep that exact name in this namespace.
+# port 5000 on it, so this Service must keep that exact name in this namespace.
+# The frontend reaches it by its fully-qualified name — see NGINX_API_HOST on
+# the web Deployment above for why a bare `api` cannot work from nginx — which
+# means renaming this Service or moving it to another namespace now breaks that
+# variable too, not just the name.
 apiVersion: v1
 kind: Service
 metadata: {name: api, namespace: prod}
