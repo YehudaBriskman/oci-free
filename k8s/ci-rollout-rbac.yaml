@@ -47,6 +47,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # The post-rollout readiness check (portfolio_site #200) talks to the new
+  # pods directly through `kubectl port-forward`: the public URL only proves
+  # the proxy or the auth gate answered, not that the app is up or which commit
+  # it runs. `create` on the port-forward subresource and nothing else: no exec,
+  # no logs, no other namespace.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -76,6 +84,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # The post-rollout readiness check (portfolio_site #200) talks to the new
+  # pods directly through `kubectl port-forward`: the public URL only proves
+  # the proxy or the auth gate answered, not that the app is up or which commit
+  # it runs. `create` on the port-forward subresource and nothing else: no exec,
+  # no logs, no other namespace.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
 ---
 # The subject is the account in `prod`. One token, two namespaces, so there is
 # still exactly one credential in GitHub's secret store to rotate or revoke.
