@@ -151,6 +151,7 @@ else
     --from-literal=WEB_ORIGIN=http://web \
     --from-literal=GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
     --from-literal=GITHUB_LOGIN=YehudaBriskman \
+    --from-literal=ADMIN_API_TOKENS=tunnel \
     --dry-run=client -o yaml | kubectl apply -f -
   echo "  portfolio-api-env written"
   [ -n "${GITHUB_TOKEN:-}" ] || cat >&2 <<'NOTOKEN'
