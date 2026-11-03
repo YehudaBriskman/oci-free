@@ -62,7 +62,7 @@ spec:
                     case "$db" in _*) continue;; esac
                     echo "  $db"
                     curl -sf -u "$COUCH_USER:$COUCH_PASS" \
-                      "$HOST/$db/_all_docs?include_docs=true" -o "$OUT/$db.json"
+                      "$HOST/$db/_all_docs?include_docs=true&attachments=true" -o "$OUT/$db.json"
                   done
                   # An empty result is only an error if there was something to copy.
                   # With no user databases yet there is legitimately nothing, and
