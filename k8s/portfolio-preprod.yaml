@@ -201,7 +201,7 @@ spec:
             - {name: NODE_ENV, value: production}
           resources:
             requests: {cpu: 20m, memory: 64Mi}
-            limits:   {memory: 256Mi}
+            limits:   {memory: 512Mi}
 ---
 # The name "api" is load-bearing here exactly as it is in prod: the frontend's
 # nginx.conf proxies /api/ to port 5000 on it, resolved per request through
