@@ -39,7 +39,17 @@ resource "oci_core_instance" "arm" {
       ts_authkey   = var.tailscale_auth_key
       ts_hostname  = var.tailscale_hostname
       ts_exit_node = var.advertise_exit_node
+      guard_script = file("${path.module}/node/oci-free-guard.sh")
+      guard_unit   = file("${path.module}/node/oci-free-guard.service")
     }))
+  }
+
+  # IMDS v1 answers any local GET with no header; v2 needs `Authorization:
+  # Bearer Oracle`, which a naive SSRF cannot add (#18). Updatable in place.
+  # It does not stop code that can add the header; node/oci-free-guard.sh
+  # drops pod traffic to 169.254.169.254 for that.
+  instance_options {
+    are_legacy_imds_endpoints_disabled = true
   }
 
   # Enabling the monitoring plugin makes memory utilization visible to OCI.

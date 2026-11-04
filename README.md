@@ -427,10 +427,11 @@ version follows the k3s version.
 ## CI and tests
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`. The
-repository is private on GitHub Free, so there is no branch protection and no
-GitHub secret scanning: this workflow is the only automated guard. Read the
-`CI gate` check; it fails if any job failed, and passes over a job that was
-skipped only because the change did not touch its paths.
+repository is public (since 2026-11-04), so it also has GitHub secret scanning
+with push protection, Dependabot alerts, and a ruleset on `main`: no deletion,
+no force-push, changes through a pull request, `CI gate` required, owner
+bypass only. Read the `CI gate` check; it fails if any job failed, and passes
+over a job that was skipped only because the change did not touch its paths.
 
 | Job | What it holds | Run it locally |
 |---|---|---|
@@ -445,3 +446,24 @@ skipped only because the change did not touch its paths.
 Tools are pinned with checksums in `.github/scripts/tools.sh`; `install` puts
 them in `~/.cache/oci-free-tools/bin` off a runner. Helm, OpenTofu and the
 telemetry e2e run only when their files change (`.github/scripts/ci-classify.sh`).
+
+## Host firewall guard (#18)
+
+`node/oci-free-guard.sh` keeps pods away from the instance metadata service and
+limits what tailnet peers can open on the node to 22, 80, 443 and 6443 (see the
+script's header for why it lives in `mangle PREROUTING`). New nodes get it from
+cloud-init. To install or update it on the running node:
+
+```sh
+scp node/oci-free-guard.sh node/oci-free-guard.service ubuntu@100.79.242.82:/tmp/
+ssh ubuntu@100.79.242.82 'sudo install -m0755 /tmp/oci-free-guard.sh /usr/local/sbin/oci-free-guard &&
+  sudo install -m0644 /tmp/oci-free-guard.service /etc/systemd/system/ &&
+  sudo systemd-run --on-active=300 --unit=guard-revert /usr/local/sbin/oci-free-guard remove &&
+  sudo systemctl daemon-reload && sudo systemctl restart oci-free-guard'
+# from a NEW ssh session, if it still works:
+ssh ubuntu@100.79.242.82 'sudo systemctl stop guard-revert.timer; sudo systemctl enable oci-free-guard'
+```
+
+The timer removes the guard after five minutes unless you cancel it, so a rule
+that locks you out undoes itself. Opening another port to the tailnet: set
+`TAILNET_TCP` in the unit (`Environment=TAILNET_TCP=22,80,443,6443,<port>`).
