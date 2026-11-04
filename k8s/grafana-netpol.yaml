@@ -1,0 +1,28 @@
+# Who may open a connection to Grafana (#15).
+#
+# Grafana signs in whoever the X-Auth-Request-Email header names (auth.proxy
+# in monitoring-values.yaml). Only Traefik sets that header, after oauth2-proxy
+# has checked the GitHub user. Without this policy any pod in any namespace
+# could reach the ClusterIP Service, send the header itself, and be signed in
+# as anyone, including you.
+#
+# Applied with kubectl, not by the chart, so a helm upgrade cannot drop it.
+# Kubelet probes are not affected: k3s's network-policy controller (kube-router)
+# always lets the node reach its own pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: grafana-ingress, namespace: monitoring}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: grafana, app.kubernetes.io/instance: kube-prometheus-stack}
+  policyTypes: [Ingress]
+  ingress:
+    # Browsers, through the oauth2-proxy forwardAuth on the grafana Ingress.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+      ports: [{protocol: TCP, port: 3000}]
+    # The chart's ServiceMonitor scrapes Grafana's /metrics. No header, no session.
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 3000}]

@@ -60,12 +60,17 @@ grafana:
       header_property: email
       auto_sign_up: true
       sync_ttl: 60
-      # Only the in-cluster pod network may assert identity headers.
+      # A second layer only. The pod network is every pod, and Traefik's pod
+      # IP is not fixed (#7), so the real gate is grafana-netpol.yaml: only
+      # Traefik (and Prometheus, to scrape) can open a connection at all (#15).
       whitelist: 10.42.0.0/16
     auth.anonymous:
       enabled: false
     users:
-      auto_assign_org_role: Admin
+      # A header that does get through creates a Viewer, not an Admin (#15).
+      # Existing users keep their role; promote a new one by hand in
+      # Administration > Users.
+      auto_assign_org_role: Viewer
 
   # WindoM telemetry (#14), in the observability namespace. Its NetworkPolicy
   # admits Grafana's pods and nothing else from this namespace.

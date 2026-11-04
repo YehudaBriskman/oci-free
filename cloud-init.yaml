@@ -114,9 +114,22 @@ write_files:
         iptables -I INPUT 1 -p udp --dport 41641 -j ACCEPT
       netfilter-persistent save
 
+  # The guard (#18): pods cannot read the instance metadata (this user_data,
+  # with the auth key), and tailnet peers reach only ports 22/80/443/6443.
+  # Source: node/oci-free-guard.sh, node/oci-free-guard.service.
+  - path: /usr/local/sbin/oci-free-guard
+    permissions: '0755'
+    content: |
+      ${indent(6, guard_script)}
+  - path: /etc/systemd/system/oci-free-guard.service
+    content: |
+      ${indent(6, guard_unit)}
+
 runcmd:
   - sysctl --system
   - /usr/local/sbin/oci-open-tailscale-ports.sh
+  - systemctl daemon-reload
+  - systemctl enable --now oci-free-guard.service
   - |
     tailscale up \
       --authkey='${ts_authkey}' \

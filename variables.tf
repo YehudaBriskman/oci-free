@@ -56,7 +56,12 @@ variable "ssh_allowed_cidr" {
 }
 
 variable "tailscale_auth_key" {
-  description = "Reusable Tailscale auth key. Set in terraform.tfvars (gitignored). Never commit."
+  description = <<-EOT
+    Tailscale auth key, used once at first boot. Set in terraform.tfvars (gitignored). Never commit.
+    It ends up in the instance's user_data, which the metadata service serves for the life
+    of the instance, and in tfstate (#18). So make it ONE-OFF (not reusable), pre-tagged and
+    short-expiry, and revoke it in the Tailscale admin console once the node has joined.
+  EOT
   type        = string
   sensitive   = true
 }

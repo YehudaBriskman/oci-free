@@ -15,6 +15,39 @@
 # are read only at registration, which runs whenever /data (an emptyDir) is
 # fresh, i.e. on every new pod: `kubectl -n forgejo rollout restart
 # deploy/forgejo-runner` after an apply that only changes --labels.
+#
+# The Docker API (#17). dind is privileged, so whoever can talk to its daemon
+# is root on the node. It used to listen on tcp://0.0.0.0:2375 with no TLS and
+# no auth, reachable from every job container (via the bridge gateway) and
+# every pod. Now it listens only on a unix socket in an emptyDir shared with
+# the runner container, so nothing outside this pod has a path to it:
+#   - dind's args start with `dockerd`. Without that, the image's entrypoint
+#     adds --host=tcp://0.0.0.0:2375 itself (dockerd-entrypoint.sh).
+#   - The runner's config sets docker_host "-": job containers do NOT get the
+#     socket mounted, privileged is off, and no host volumes are allowed.
+#   - The NetworkPolicy at the end refuses all ingress to this pod.
+# Consequence: a workflow cannot `docker build` against the daemon. None do
+# today (the site builds its images on GitHub Actions); add a rootless
+# builder (e.g. buildah) to the job image if one ever needs to.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: forgejo-runner-config, namespace: forgejo}
+data:
+  config.yaml: |
+    log: {level: info}
+    runner:
+      file: .runner
+      capacity: 1
+      timeout: 3h
+    container:
+      network: ""
+      privileged: false
+      options: ""
+      # "-": find the daemon from DOCKER_HOST, but never mount it into jobs.
+      docker_host: "-"
+      valid_volumes: []
+      force_pull: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: forgejo-runner, namespace: forgejo}
@@ -52,27 +85,43 @@ spec:
           args:
             - |
               for i in $(seq 1 90); do
-                nc -z localhost 2375 2>/dev/null && break
+                [ -S /run/dind/docker.sock ] && break
                 sleep 2
               done
-              exec forgejo-runner daemon
+              exec forgejo-runner daemon --config /config/config.yaml
           workingDir: /data
           env:
-            - {name: DOCKER_HOST, value: "tcp://localhost:2375"}
+            - {name: DOCKER_HOST, value: "unix:///run/dind/docker.sock"}
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits:   {memory: 512Mi}
-          volumeMounts: [{name: data, mountPath: /data}]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: dind-sock, mountPath: /run/dind}
+            - {name: config, mountPath: /config, readOnly: true}
         - name: dind
           image: docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
           securityContext: {privileged: true}
-          env:
-            - {name: DOCKER_TLS_CERTDIR, value: ""}
-          args: ["--host=tcp://0.0.0.0:2375","--tls=false"]
+          # The runner is uid 1000, gid 0, so the socket is group root, mode 0660.
+          args: ["dockerd", "--host=unix:///run/dind/docker.sock", "--group=root"]
           resources:
             requests: {cpu: 50m, memory: 192Mi}
             limits:   {memory: 1Gi}
-          volumeMounts: [{name: dind-storage, mountPath: /var/lib/docker}]
+          volumeMounts:
+            - {name: dind-storage, mountPath: /var/lib/docker}
+            - {name: dind-sock, mountPath: /run/dind}
       volumes:
         - {name: data, emptyDir: {}}
         - {name: dind-storage, emptyDir: {}}
+        - {name: dind-sock, emptyDir: {}}
+        - {name: config, configMap: {name: forgejo-runner-config}}
+---
+# Nothing connects TO the runner: it polls Forgejo and talks to its own dind
+# over the socket. So no ingress at all (#17). Egress stays open: jobs fetch
+# from the internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: forgejo-runner-no-ingress, namespace: forgejo}
+spec:
+  podSelector: {matchLabels: {app: forgejo-runner}}
+  policyTypes: [Ingress]
