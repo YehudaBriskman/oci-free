@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Notes on this infrastructure
+    url: https://yehudabriskman.com/blog/area/oci-free
+    about: Write-ups of the decisions behind this repository.
+  - name: The site it hosts
+    url: https://yehudabriskman.com
+    about: yehudabriskman.com, with its contact form.
+  - name: Report a security vulnerability
+    url: https://github.com/YehudaBriskman/oci-free/security/advisories/new
+    about: Privately, through a GitHub security advisory. Never in a public issue.

@@ -1,0 +1,36 @@
+name: Bug report
+description: A manifest, script, check or doc that is broken or wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security problems, including a credential you think was committed, go through private reporting, not here:** see the security policy. Please do not paste addresses, hostnames or secrets from your own deployment.
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: The file (and line), or the command.
+      placeholder: k8s/backup-cronjob.yaml:42
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: k3s, kubectl, helm, OpenTofu
+  - type: textarea
+    id: extra
+    attributes:
+      label: Logs or anything else
+      render: text

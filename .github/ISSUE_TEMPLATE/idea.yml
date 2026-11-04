@@ -1,0 +1,24 @@
+name: Idea or question
+description: Suggest an improvement, or ask why something is set up this way.
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a personal project: ideas are welcome, and pull requests are by invitation. If you would like to build this yourself, say so below.
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea or question
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it would help
+  - type: checkboxes
+    id: build
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to open a pull request for this if asked
