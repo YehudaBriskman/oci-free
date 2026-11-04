@@ -58,6 +58,14 @@ need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
 need kubectl
 need base64
 
+# The wrong cluster is the likeliest mistake, and here it is a quiet one: a
+# kubeconfig for whatever context was used last would be minted, piped into
+# GitHub and only fail at the next deploy (tests/scripts.sh).
+if ! kubectl get node free-arm >/dev/null 2>&1; then
+  echo "refusing: kubectl context '$(kubectl config current-context 2>/dev/null || echo none)' has no node 'free-arm'; this is not the OCI cluster" >&2
+  exit 1
+fi
+
 # The server the *current* context talks to. If that is a tailnet address, the
 # runner reaches it over Tailscale -- which is the whole reason the deploy job
 # joins the tailnet before using this.

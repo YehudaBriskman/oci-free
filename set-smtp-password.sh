@@ -4,9 +4,17 @@
 # up in shell history and in the Claude transcript.
 set -uo pipefail
 
-OUT="$HOME/projects/oci-free/.smtp-pw"
+# Next to this script, where .gitignore covers it. It used to be
+# ~/projects/oci-free/.smtp-pw, a directory that does not exist since the repo
+# moved under ~/projects/personal: the write failed, and without `set -e` the
+# script still printed "Saved".
+OUT="$(cd "$(dirname "$0")" && pwd)/.smtp-pw"
 USER_ADDR=$(grep -E '^SMTP_USER=' "$HOME/projects/personal/portfolio_site/backend/.env" \
             | cut -d= -f2- | tr -d '"' | tr -d '[:space:]')
+case "$USER_ADDR" in
+  *@*) ;;
+  *) printf 'No SMTP_USER in portfolio_site/backend/.env; nothing to check against.\n' >&2; exit 1 ;;
+esac
 
 printf 'Gmail account : %s\n' "$USER_ADDR"
 printf 'App password  : '
@@ -22,9 +30,13 @@ if [ "${#PW}" -ne 16 ]; then
 fi
 
 printf '\n  Checking it against Gmail...\n'
-if ! python3 - "$USER_ADDR" "$PW" <<'PY'
-import smtplib, ssl, sys
-user, pw = sys.argv[1], sys.argv[2]
+# The password reaches python on fd 3, not argv: an argument is readable in
+# the process list by anyone on the machine for as long as the login takes.
+if ! python3 - "$USER_ADDR" 3<<<"$PW" <<'PY'
+import os, smtplib, ssl, sys
+user = sys.argv[1]
+with os.fdopen(3) as f:
+    pw = f.read().rstrip("\n")
 try:
     s = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20, context=ssl.create_default_context())
     s.login(user, pw); s.quit()
@@ -41,7 +53,9 @@ then
 fi
 
 umask 077
-printf '%s' "$PW" > "$OUT"
-chmod 600 "$OUT"
+if ! printf '%s' "$PW" > "$OUT" || ! chmod 600 "$OUT"; then
+  printf '  Could not write %s. Nothing was saved.\n' "$OUT" >&2
+  exit 1
+fi
 printf '  Saved to %s\n' "${OUT/$HOME/\~}"
 printf '\n  Now tell Claude: "new smtp password saved"\n'

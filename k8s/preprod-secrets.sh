@@ -13,8 +13,8 @@
 # else. To add it to a namespace that already has the secret, without
 # rotating the fifteen generated keys beside it:
 #
-#   kubectl -n preprod patch secret portfolio-api-env --type merge \
-#     -p "{\"stringData\":{\"GITHUB_TOKEN\":\"$GITHUB_TOKEN\"}}"
+#   printf '{"stringData":{"GITHUB_TOKEN":"%s"}}' "$GITHUB_TOKEN" \
+#     | kubectl -n preprod patch secret portfolio-api-env --type merge --patch-file=/dev/stdin
 #   kubectl -n preprod rollout restart deploy/api
 #
 # The restart is not optional: an envFrom change is invisible to a running
@@ -57,6 +57,13 @@ need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
 need kubectl
 need openssl
 
+# Same guard as the other cluster-writing scripts (tests/scripts.sh): this
+# creates secrets in whatever cluster the current context points at.
+if ! kubectl get node free-arm >/dev/null 2>&1; then
+  echo "refusing: kubectl context '$(kubectl config current-context 2>/dev/null || echo none)' has no node 'free-arm'; this is not the OCI cluster" >&2
+  exit 1
+fi
+
 kubectl get ns "$NS" >/dev/null 2>&1 || {
   echo "no $NS namespace — run ./k8s/portfolio-apply.sh preprod first" >&2
   exit 1
@@ -73,11 +80,15 @@ else
   # requirement is that it survives being an environment variable and a YAML
   # scalar; `rand -base64` can emit `+` and `/`, both of which do, and neither
   # of which reaches a URL — the API sends it as an HTTP Basic header.
+  #
+  # The values reach kubectl on stdin, never argv: `--from-literal=PW=...`
+  # put the password in the process list for as long as kubectl ran. printf
+  # is a builtin, so it is not on any argv either.
   COUCH_PW=$(openssl rand -base64 24)
-  kubectl -n "$NS" create secret generic preprod-couch \
-    --from-literal=COUCHDB_USER=portfolio_api \
-    --from-literal=COUCHDB_PASSWORD="$COUCH_PW" \
-    --dry-run=client -o yaml | kubectl apply -f -
+  printf 'COUCHDB_USER=portfolio_api\nCOUCHDB_PASSWORD=%s\n' "$COUCH_PW" \
+    | kubectl -n "$NS" create secret generic preprod-couch \
+      --from-env-file=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+  unset COUCH_PW
   echo "  preprod-couch written"
 fi
 
@@ -129,31 +140,37 @@ else
   #                 being read. They are the same person today and there is
   #                 no reason the schema should assume it.
   #
-  # `--from-literal` rather than `--from-env-file`: the env-file form does not
-  # strip quotes the way dotenv does, and the prod secret was once created with
-  # `CONTACT_TO="a@b.com"` quotes and all, which failed the email validator at
-  # boot. There is nothing to quote here.
-  kubectl -n "$NS" create secret generic portfolio-api-env \
-    --from-literal=NODE_ENV=production \
-    --from-literal=PORT=5000 \
-    --from-literal=EMAIL_PROVIDER=smtp \
-    --from-literal=SMTP_HOST=mail \
-    --from-literal=SMTP_PORT=1025 \
-    --from-literal=SMTP_SECURE=false \
-    --from-literal=SMTP_USER=preprod \
-    --from-literal=SMTP_PASS=preprod \
-    --from-literal=MAIL_FROM=noreply@preprod.invalid \
-    --from-literal=MAIL_REPLY_TO= \
-    --from-literal=CONTACT_TO=contact@preprod.invalid \
-    --from-literal=COUCHDB_URL=http://couch:5984 \
-    --from-literal=ADMIN_PROXY_SECRET="$ADMIN_SECRET" \
-    --from-literal=ADMIN_GITHUB_LOGIN=YehudaBriskman \
-    --from-literal=SITE_URL=https://preprod.yehudabriskman.com \
-    --from-literal=WEB_ORIGIN=http://web \
-    --from-literal=GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
-    --from-literal=GITHUB_LOGIN=YehudaBriskman \
-    --from-literal=ADMIN_API_TOKENS=tunnel \
-    --dry-run=client -o yaml | kubectl apply -f -
+  # An env file on stdin rather than `--from-literal`, which put
+  # ADMIN_PROXY_SECRET and GITHUB_TOKEN in kubectl's argv, readable in the
+  # process list by anyone on the machine while it ran (tests/scripts.sh).
+  # The env-file form does not strip quotes the way dotenv does -- the prod
+  # secret was once created with `CONTACT_TO="a@b.com"` quotes and all, which
+  # failed the email validator at boot -- so nothing below is quoted, and
+  # the two generated values are hex and a PAT, neither of which needs it.
+  {
+    cat <<'ENV'
+NODE_ENV=production
+PORT=5000
+EMAIL_PROVIDER=smtp
+SMTP_HOST=mail
+SMTP_PORT=1025
+SMTP_SECURE=false
+SMTP_USER=preprod
+SMTP_PASS=preprod
+MAIL_FROM=noreply@preprod.invalid
+MAIL_REPLY_TO=
+CONTACT_TO=contact@preprod.invalid
+COUCHDB_URL=http://couch:5984
+ADMIN_GITHUB_LOGIN=YehudaBriskman
+SITE_URL=https://preprod.yehudabriskman.com
+WEB_ORIGIN=http://web
+GITHUB_LOGIN=YehudaBriskman
+ADMIN_API_TOKENS=tunnel
+ENV
+    printf 'ADMIN_PROXY_SECRET=%s\nGITHUB_TOKEN=%s\n' "$ADMIN_SECRET" "${GITHUB_TOKEN:-}"
+  } | kubectl -n "$NS" create secret generic portfolio-api-env \
+    --from-env-file=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+  unset ADMIN_SECRET
   echo "  portfolio-api-env written"
   [ -n "${GITHUB_TOKEN:-}" ] || cat >&2 <<'NOTOKEN'
   NOTE: GITHUB_TOKEN was empty, so the contribution city will render its

@@ -28,6 +28,23 @@ TARGET="${1:-both}"
 
 say() { printf '\n==> %s\n' "$*"; }
 
+case "$TARGET" in
+  api | web | both) ;;
+  *)
+    echo "usage: $0 [web|api|both]" >&2
+    exit 2
+    ;;
+esac
+
+# The same guard as every other script that writes to the cluster: kubectl's
+# current context is whatever was used last, and the rollouts below restart
+# whatever `prod` that context has. Checked before the sync and the build, so
+# a wrong context costs nothing (tests/scripts.sh).
+if ! kubectl get node free-arm >/dev/null 2>&1; then
+  echo "refusing: kubectl context '$(kubectl config current-context 2>/dev/null || echo none)' has no node 'free-arm'; this is not the OCI cluster" >&2
+  exit 1
+fi
+
 sync_source() {
   local component="$1"
   say "Syncing ${component}"
@@ -40,10 +57,13 @@ sync_source() {
 build_and_import() {
   local name="$1" dir="$2"
   say "Building ${name} on the node"
+  # Expanded here on purpose: the names are this script's, not the node's.
+  # shellcheck disable=SC2029
   ssh "$NODE" "cd ~/${REMOTE_DIR}/${dir} && docker build -t ${name}:latest ."
   say "Importing ${name} into k3s containerd"
   # Streamed through a pipe so the tarball never lands on the node's disk: the
   # boot volume is the free tier's allowance and images add up quickly.
+  # shellcheck disable=SC2029
   ssh "$NODE" "docker save ${name}:latest | sudo k3s ctr images import -"
 }
 
@@ -72,10 +92,6 @@ case "$TARGET" in
     kubectl -n prod rollout status deploy/web --timeout=180s
     kubectl -n prod rollout restart deploy/api
     kubectl -n prod rollout status deploy/api --timeout=180s
-    ;;
-  *)
-    echo "usage: $0 [web|api|both]" >&2
-    exit 2
     ;;
 esac
 
