@@ -3,7 +3,7 @@
 # The three secrets preprod needs, created from nothing an operator has to
 # invent twice.
 #
-#   kubectl apply -f k8s/portfolio-preprod.yaml
+#   ./k8s/portfolio-apply.sh preprod
 #   GITHUB_TOKEN=ghp_... ./k8s/preprod-secrets.sh
 #   ./k8s/preprod-admin-gate.sh         # the admin area's proof header
 #
@@ -58,7 +58,7 @@ need kubectl
 need openssl
 
 kubectl get ns "$NS" >/dev/null 2>&1 || {
-  echo "no $NS namespace — apply k8s/portfolio-preprod.yaml first" >&2
+  echo "no $NS namespace — run ./k8s/portfolio-apply.sh preprod first" >&2
   exit 1
 }
 

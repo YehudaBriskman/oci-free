@@ -1,10 +1,32 @@
 # Portfolio: static frontend (nginx) + contact-form API.
 #
 # Images come from GHCR, published by the site repository's CI on every push to
-# main, multi-arch so the arm64 node can actually run them. The tag is rewritten
-# per rollout by `kubectl set image` in that same pipeline, so what is committed
-# here is a floor rather than what is running: `:latest` is what a fresh
-# `kubectl apply` gets, and the live tag is a commit sha.
+# main, multi-arch so the arm64 node can actually run them. CI owns the `image`
+# field of `web` and `api`, and this file deliberately has none (#25).
+#
+# CI rolls out `<app>@sha256:...` from the release manifest it records in GHCR,
+# with `kubectl set image`. When this file carried `image: ...:latest`, any
+# `kubectl apply` of it put that tag back over CI's digest, because client-side
+# apply diffs the file against the LIVE object, not against what it last
+# applied. On 2026-11-04 an apply of the preprod manifest did exactly that, and
+# preprod went back to the last release. No value written here can be right for
+# longer than one CI run, so there is no value written here.
+#
+# What that costs, measured on a throwaway k3s 1.31:
+#
+# - `kubectl apply -f` of this file leaves the live image alone. Every other
+#   field (env, probes, resources, pull secret) is still applied from here.
+# - A Deployment cannot be CREATED without an image ("image: Required value").
+#   `./k8s/portfolio-apply.sh prod` creates a missing one at `:latest` (the last
+#   release) and then applies this file; CI's next deploy pins the digest.
+# - A Deployment last applied from the old file still has `"image":` in its
+#   last-applied annotation, and a plain apply then tries to delete the field,
+#   which the API server refuses (nothing changes, the apply errors).
+#   `portfolio-apply.sh` drops that stale annotation once; after that a plain
+#   `kubectl apply -f` is safe.
+#
+# What is running: `kubectl -n prod get deploy web api -o wide`, and the
+# `portfolio.yehudabriskman.com/source-sha` annotation CI writes.
 #
 # This replaced `imagePullPolicy: Never` against images built on the node from a
 # laptop's working directory. That arrangement could run code that was never
@@ -29,8 +51,8 @@ spec:
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: web
-          image: ghcr.io/yehudabriskman/portfolio_site/web:latest
-          # Not Always: the pipeline sets an immutable sha tag, so there is
+          # No `image:` on purpose; CI owns it. See the header.
+          # Not Always: the pipeline sets an immutable digest, so there is
           # nothing to re-check on a restart, and Always would turn every pod
           # reschedule into a registry round trip the node does not need.
           imagePullPolicy: IfNotPresent
@@ -82,7 +104,7 @@ spec:
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: api
-          image: ghcr.io/yehudabriskman/portfolio_site/api:latest
+          # No `image:` on purpose; CI owns it. See the header.
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 5000}]
           envFrom:

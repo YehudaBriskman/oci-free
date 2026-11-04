@@ -62,7 +62,8 @@
 # patches the image on `web` and `api`; see ci-rollout-rbac.yaml for exactly
 # how much it is allowed to do in this namespace.
 #
-#   kubectl apply -f k8s/portfolio-preprod.yaml
+#   ./k8s/portfolio-apply.sh preprod    # once it has run, plain
+#                                       # `kubectl apply -f` is safe too
 #   ./k8s/preprod-secrets.sh            # the two secrets this expects
 #
 apiVersion: v1
@@ -142,14 +143,12 @@ spec:
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: web
-          # `:latest` means the last *release*, and preprod is for what has not
-          # been released. It is here for the same reason it is in the prod
-          # manifest -- it is the tag a fresh `kubectl apply` lands on, i.e. a
-          # floor -- and CI overwrites it with the `main` commit sha within
-          # seconds of any push. An apply between merges therefore shows the
-          # last release until the next merge, which is a dull preprod rather
-          # than a wrong one.
-          image: ghcr.io/yehudabriskman/portfolio_site/web:latest
+          # No `image:` on purpose: CI owns it, exactly as in prod (#25). Until
+          # 2026-11-04 this said `:latest`, and an apply of this file swapped
+          # the `main` digest CI had deployed for the last release. Now an
+          # apply leaves the image alone. A missing Deployment is created by
+          # `./k8s/portfolio-apply.sh preprod`; the header of portfolio.yaml
+          # has the measured details.
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8080}]
           env:
@@ -202,7 +201,7 @@ spec:
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: api
-          image: ghcr.io/yehudabriskman/portfolio_site/api:latest
+          # No `image:` on purpose; CI owns it. See `web` above.
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 5000}]
           envFrom:
