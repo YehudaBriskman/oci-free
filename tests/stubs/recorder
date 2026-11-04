@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# A fake ssh / rsync / flyctl for tests/scripts.sh, linked under each name.
+# Records the call in $STUB_DIR/calls like the kubectl stub, and:
+#   flyctl   saves its stdin to $STUB_DIR/stdin.<n>
+#   ssh      prints $STUB_SSH_OUT and exits $STUB_SSH_RC (default 0)
+set -euo pipefail
+: "${STUB_DIR:?}"
+me=$(basename "$0")
+exec 9>>"$STUB_DIR/calls"
+flock 9 # see the kubectl stub
+n=$(($(wc -l <"$STUB_DIR/calls") + 1))
+{ printf '%s' "$me"; printf ' %q' "$@"; printf '\n'; } >&9
+flock -u 9
+case "$me" in
+  flyctl) cat >"$STUB_DIR/stdin.$n" ;;
+  ssh)
+    printf '%s' "${STUB_SSH_OUT:-}"
+    exit "${STUB_SSH_RC:-0}"
+    ;;
+esac
+exit 0

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# A fake kubectl for tests/scripts.sh. It never talks to a cluster: it records
+# every call and answers from environment variables.
+#
+# Records, under $STUB_DIR:
+#   calls       one line per call: `kubectl <args, %q-quoted>`
+#   stdin.<n>   what call n read on stdin, for calls that read it
+#               (`-f -`, or any argument naming /dev/stdin)
+#
+# Answers:
+#   STUB_NODE=present        `get node free-arm` succeeds (default: absent)
+#   STUB_NAMESPACES="a b"    namespaces that exist
+#   STUB_DEPLOYS="ns/name"   deployments that exist
+#   STUB_LAST_<ns>_<name>    a deployment's last-applied-configuration
+#   STUB_SECRETS="ns/name"   secrets that exist
+#   STUB_DATA_<ns>_<secret>_<KEY>  base64 value `-o jsonpath={.data.KEY}` returns
+#
+# `create ... --dry-run=client -o yaml` prints a fake object followed by the
+# stdin it was given, so whatever is piped on to `apply -f -` carries the
+# value the way the real YAML would.
+set -euo pipefail
+: "${STUB_DIR:?}"
+
+# Numbered under a lock: both ends of `create ... | kubectl apply -f -` run at
+# once, and without it they can take the same number and overwrite each
+# other's stdin record.
+exec 9>>"$STUB_DIR/calls"
+flock 9
+n=$(($(wc -l <"$STUB_DIR/calls") + 1))
+{ printf 'kubectl'; printf ' %q' "$@"; printf '\n'; } >&9
+flock -u 9
+
+reads_stdin=0
+prev=
+for a in "$@"; do
+  case "$a" in *"/dev/stdin"*) reads_stdin=1 ;; esac
+  if [ "$a" = - ] && [ "$prev" = -f ]; then reads_stdin=1; fi
+  prev=$a
+done
+if [ "$reads_stdin" = 1 ]; then
+  cat >"$STUB_DIR/stdin.$n"
+fi
+
+# Pull out -n <ns>; what is left starts with the verb.
+ns=default
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n) ns=$2; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]}"
+
+has() { local x; for x in "${args[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1; }
+in_list() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+var() { local v="STUB_${1//[^A-Za-z0-9]/_}"; printf '%s' "${!v-}"; }
+
+case "${1-} ${2-}" in
+  "config current-context") echo stub-context ;;
+  "get node" | "get nodes")
+    [ "${STUB_NODE:-absent}" = present ] && [ "${3-}" = free-arm ] && { echo "node/free-arm"; exit 0; }
+    echo "Error from server (NotFound): nodes \"${3-}\" not found" >&2
+    exit 1
+    ;;
+  "get namespace" | "get ns")
+    shift 2
+    for x in "$@"; do
+      case "$x" in -*) break ;; esac # names come first, then options
+      if ! in_list "$x" "${STUB_NAMESPACES:-}"; then
+        has --ignore-not-found && exit 0
+        echo "Error from server (NotFound): namespaces \"$x\" not found" >&2
+        exit 1
+      fi
+      has -o && echo "namespace/$x"
+    done
+    exit 0
+    ;;
+  "get deploy" | "get deployment")
+    name=${3-}
+    if ! in_list "$ns/$name" "${STUB_DEPLOYS:-}"; then
+      has --ignore-not-found && exit 0
+      echo "Error from server (NotFound): deployments.apps \"$name\" not found" >&2
+      exit 1
+    fi
+    for x in "${args[@]}"; do
+      case "$x" in
+        jsonpath=*last-applied*) var "LAST_${ns}_${name}"; exit 0 ;;
+      esac
+    done
+    has name && echo "deployment.apps/$name"
+    exit 0
+    ;;
+  "get secret")
+    name=${3-}
+    if ! in_list "$ns/$name" "${STUB_SECRETS:-}"; then
+      echo "Error from server (NotFound): secrets \"$name\" not found" >&2
+      exit 1
+    fi
+    for x in "${args[@]}"; do
+      case "$x" in
+        jsonpath=*'{.data.'*)
+          key=${x#*\{.data.}
+          key=${key%%\}*}
+          key=${key//\\/}
+          var "DATA_${ns}_${name}_${key}"
+          exit 0
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+  "create secret" | "create deployment" | "create namespace" | "create token")
+    if has --dry-run=client; then
+      echo "kind: Secret"
+      echo "# stub: stdin follows"
+      [ -f "$STUB_DIR/stdin.$n" ] && cat "$STUB_DIR/stdin.$n"
+    fi
+    [ "$2" = token ] && echo "stub-bound-token"
+    exit 0
+    ;;
+  *) exit 0 ;; # apply, annotate, rollout, patch: recorded, nothing to answer
+esac
