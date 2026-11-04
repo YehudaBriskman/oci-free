@@ -17,6 +17,12 @@ running k3s, in `il-jerusalem-1`.
 | Egress | 10 TB/month | Tailscale exit node |
 | Load balancer | 1 flexible (10 Mbps) | unused — Traefik on the node instead |
 
+Memory inside the A1 is shared by everything in k8s/. The WindoM telemetry
+stack (#14) requests about 420 MiB (collector 96, Loki 192, Tempo 128), with
+limits of about 1.3 GiB, plus two 10 Gi `local-path` volumes on the boot disk.
+Retention is set in its config, not by disk: logs 14 days, traces 7, metrics
+15 (Prometheus, unchanged). The privacy policy promises 30 days or less.
+
 Home region is permanent. Always Free resources exist only there.
 
 ## Idle reclamation
@@ -55,6 +61,7 @@ k8s/                 Manifests + Helm values, applied against context `oci-free`
 | `git.` | tailnet only | Traefik `ipAllowList` on `100.64.0.0/10` |
 | `couchdb.` | tailnet only | same, then CouchDB basic auth |
 | `preprod.` | tailnet only | same, plus `X-Robots-Tag: noindex` |
+| `otel.` | public | bearer token, checked by the OTel collector (Fly cannot do OAuth); 4 MiB body cap, rate limit |
 
 SSH and the Kubernetes API are never exposed publicly; both go over Tailscale.
 
@@ -268,6 +275,31 @@ forwarding to the container's 8080. That is correct in a namespace and wrong
 anywhere there is no Service — under Docker Compose it has to be
 `http://web:8080`, or every per-URL head quietly falls back to the plain SPA
 shell and the page still loads with the wrong `<title>`.
+
+## Telemetry (WindoM, #14)
+
+`otel.yehudabriskman.com` takes OTLP/HTTP from WindoM on Fly. The collector
+deletes PII attributes, then sends logs to Loki, traces to Tempo, and metrics
+to Prometheus (which scrapes it). Alerts email through Alertmanager. The
+namespace runs default-deny NetworkPolicies and Pod Security `restricted`.
+
+First install, in this order (`kubectl` on the node, as for the other scripts):
+
+```sh
+kubectl apply -f k8s/observability.yaml      # namespace, policies, workloads
+./k8s/telemetry-secrets.sh                   # token + SMTP + Alertmanager config
+kubectl apply -f k8s/windom-alerts.yaml -f k8s/windom-dashboard.yaml
+helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n monitoring -f k8s/monitoring-values.yaml \
+  --version "$(helm -n monitoring list -o json | jq -r '.[]|select(.name=="kube-prometheus-stack").chart' | sed 's/.*-//')"
+./k8s/otel-token-to-fly.sh                   # from your machine: switches WindoM on
+```
+
+The collector stays in `CreateContainerConfigError` until the second step has
+created its token. That is expected. Rotate with
+`telemetry-secrets.sh --rotate-token`, then `otel-token-to-fly.sh`. Rotating
+breaks ingest until Fly has the new token, and `WindomSilent` tells you if
+that step was missed.
 
 ## Rebuild
 

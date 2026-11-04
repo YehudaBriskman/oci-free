@@ -1,0 +1,270 @@
+# The WindoM Grafana dashboard (#14). Grafana's sidecar loads any ConfigMap
+# labelled grafana_dashboard=1. Edit the JSON here, not in the UI (editable is
+# off so the two cannot drift).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: windom-dashboard
+  namespace: monitoring
+  labels: {grafana_dashboard: "1"}
+data:
+  windom.json: |
+    {
+     "uid": "windom",
+     "title": "WindoM",
+     "tags": [
+      "windom"
+     ],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "refresh": "1m",
+     "time": {
+      "from": "now-6h",
+      "to": "now"
+     },
+     "panels": [
+      {
+       "id": 1,
+       "type": "timeseries",
+       "title": "Requests / s",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "reqps"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"windom-api\"}[5m]))",
+         "legendFormat": "all"
+        }
+       ]
+      },
+      {
+       "id": 2,
+       "type": "timeseries",
+       "title": "p95 latency",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "s"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"windom-api\"}[5m])))",
+         "legendFormat": "p95"
+        }
+       ]
+      },
+      {
+       "id": 3,
+       "type": "timeseries",
+       "title": "5xx / s",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "reqps"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"windom-api\",http_response_status_code=~\"5..\"}[5m]))",
+         "legendFormat": "5xx"
+        }
+       ]
+      },
+      {
+       "id": 4,
+       "type": "timeseries",
+       "title": "DB pool",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "{job=\"windom-api\", __name__=~\"db_client_connections?_(count|usage|pending_requests|max|idle_max)\"}",
+         "legendFormat": "{{__name__}} {{db_client_connection_state}}{{state}}"
+        }
+       ]
+      },
+      {
+       "id": 5,
+       "type": "stat",
+       "title": "Token-reuse events (range)",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 12,
+        "y": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short",
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "red",
+            "value": 1
+           }
+          ]
+         }
+        },
+        "overrides": []
+       },
+       "options": {
+        "reduceOptions": {
+         "calcs": [
+          "sum"
+         ]
+        },
+        "colorMode": "background"
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "sum(count_over_time({service_name=\"windom-api\"} | event_name=\"auth.token_reuse_detected\" [$__auto]))",
+         "queryType": "range"
+        }
+       ]
+      },
+      {
+       "id": 6,
+       "type": "logs",
+       "title": "Token-reuse events",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+       },
+       "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "{service_name=\"windom-api\"} | event_name=\"auth.token_reuse_detected\""
+        }
+       ]
+      },
+      {
+       "id": 7,
+       "type": "logs",
+       "title": "Recent errors",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 16
+       },
+       "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "{service_name=\"windom-api\"} | detected_level=~\"error|fatal\" or event_name=\"http.server.error\""
+        }
+       ]
+      }
+     ],
+     "editable": false
+    }

@@ -1,0 +1,58 @@
+# WindoM alerts (#14). Four rules on logs (Loki ruler) and one on the
+# collector itself (Prometheus). Every alert carries team=windom, which is the
+# only label the Alertmanager config (alertmanager.yaml.tmpl) emails on, so the
+# cluster's own stock alerts stay as quiet as they were before.
+#
+# Alerts match on the `event.name` log attribute (Loki: event_name), never on
+# message text. That is the contract in #14.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: loki-rules, namespace: observability}
+data:
+  windom.yaml: |
+    groups:
+      - name: windom
+        interval: 1m
+        rules:
+          - alert: WindomTokenReuse
+            expr: sum(count_over_time({service_name="windom-api"} | event_name="auth.token_reuse_detected" [5m])) > 0
+            labels: {team: windom, severity: page}
+            annotations:
+              summary: "WindoM detected a refresh-token reuse"
+              description: "A refresh token was presented after it had been rotated, which is the signature of a stolen token. Check the WindoM dashboard's token-reuse panel."
+          - alert: WindomDbPoolExhausted
+            expr: sum(count_over_time({service_name="windom-api"} | event_name="db.pool_exhausted" [5m])) > 0
+            labels: {team: windom, severity: page}
+            annotations:
+              summary: "WindoM's database pool ran out of connections"
+          - alert: WindomServerErrors
+            expr: sum(count_over_time({service_name="windom-api"} | event_name="http.server.error" [5m])) > 20
+            labels: {team: windom, severity: warning}
+            annotations:
+              summary: "WindoM returned more than 20 5xx responses in 5 minutes"
+          # Fly's health checks log continuously, so 30 minutes of nothing
+          # means the app or the pipeline is down. This also fires until WindoM
+          # is first connected; that is the point.
+          - alert: WindomSilent
+            expr: absent_over_time({service_name="windom-api"}[30m])
+            labels: {team: windom, severity: warning}
+            annotations:
+              summary: "No WindoM logs for 30 minutes"
+              description: "Either windom-api is down or its telemetry no longer reaches otel.yehudabriskman.com (token rotated on one side only?)."
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels: {release: kube-prometheus-stack}
+spec:
+  groups:
+    - name: otel-collector
+      rules:
+        - alert: OtelCollectorRejecting
+          expr: sum(increase({__name__=~"otelcol_(receiver_refused|exporter_send_failed|processor_refused|processor_dropped)_.+", job="otel-collector"}[15m])) > 0
+          labels: {team: windom, severity: warning}
+          annotations:
+            summary: "The OTLP collector refused or dropped telemetry in the last 15 minutes"
+            description: "Usually memory_limiter pressure, or Loki/Tempo down. Check the collector's otelcol_* series."

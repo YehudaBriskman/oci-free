@@ -1,0 +1,506 @@
+# WindoM production telemetry (#14): a public OTLP/HTTP endpoint, Loki for logs,
+# Tempo for traces. Metrics go to the existing Prometheus (it scrapes the
+# collector; see the ServiceMonitor below). Alerts are in windom-alerts.yaml,
+# the dashboard in windom-dashboard.yaml, and the token and SMTP Secrets come
+# from telemetry-secrets.sh. Never from this file.
+#
+#   Fly (windom-api) --HTTPS + Bearer--> Traefik --> otel-collector:4318
+#        otel-collector --> loki:3100/otlp   (logs, 14d)
+#                       --> tempo:4317       (traces, 7d)
+#                       <-- Prometheus scrapes :8889 (metrics, 15d as before)
+#
+# Security shape (from the 2026-11-04 audit, see the comment on #14):
+#  - default-deny NetworkPolicy, both directions, then one rule per real flow.
+#    Nothing here can reach Grafana's port or the metadata service.
+#  - Pod Security `restricted` is enforced on the namespace (#20), so every pod
+#    is non-root with no capabilities and a read-only root filesystem.
+#  - The bearer token is the only gate on otel. (Fly cannot do OAuth). A request
+#    without it gets a 401 from the collector and is never stored.
+#  - The collector deletes PII attributes again, as a second layer behind the
+#    app's own redaction.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# ---------------------------------------------------------------- NetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: observability}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns, namespace: observability}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: otel-collector, namespace: observability}
+spec:
+  podSelector: {matchLabels: {app: otel-collector}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # OTLP from the public edge only.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+      ports: [{protocol: TCP, port: 4318}]
+    # Prometheus scrapes the app metrics (8889) and the collector's own (8888).
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 8888}, {protocol: TCP, port: 8889}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: loki}}}]
+      ports: [{protocol: TCP, port: 3100}]
+    - to: [{podSelector: {matchLabels: {app: tempo}}}]
+      ports: [{protocol: TCP, port: 4317}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: loki, namespace: observability}
+spec:
+  podSelector: {matchLabels: {app: loki}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: otel-collector}}}]
+      ports: [{protocol: TCP, port: 3100}]
+    # Grafana queries it. Bothy (#302) will need its own rule here once a
+    # tailnet path exists; #7 explains why that is not just an ipBlock.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}
+      ports: [{protocol: TCP, port: 3100}]
+  egress:
+    # The ruler posts alerts to Alertmanager. Its only way out.
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: alertmanager}}
+      ports: [{protocol: TCP, port: 9093}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: tempo, namespace: observability}
+spec:
+  podSelector: {matchLabels: {app: tempo}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: otel-collector}}}]
+      ports: [{protocol: TCP, port: 4317}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}
+      ports: [{protocol: TCP, port: 3200}]
+  egress: []
+---
+# ---------------------------------------------------------------- Collector
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: otel-collector, namespace: observability}
+data:
+  config.yaml: |
+    extensions:
+      bearertokenauth:
+        token: ${env:OTLP_TOKEN}
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+            auth: {authenticator: bearertokenauth}
+            max_request_body_size: 4194304
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 200
+        spike_limit_mib: 50
+      # Second privacy layer: the app already redacts, and this deletes the
+      # same keys again wherever they appear. Keep the list in step with the
+      # contract in #14.
+      transform/pii:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements: &pii
+              - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+          - context: log
+            statements:
+              - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+              - replace_pattern(attributes["url.full"], "\\?.*$", "")
+        trace_statements:
+          - context: resource
+            statements: *pii
+          - context: span
+            statements:
+              - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+              - replace_pattern(attributes["url.full"], "\\?.*$", "")
+          - context: spanevent
+            statements:
+              - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+        metric_statements:
+          - context: resource
+            statements: *pii
+          - context: datapoint
+            statements:
+              - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+      batch:
+        timeout: 5s
+
+    exporters:
+      otlphttp/loki:
+        endpoint: http://loki:3100/otlp
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls: {insecure: true}
+      # Prometheus scrapes this rather than the collector writing into
+      # Prometheus, so Prometheus gains no write endpoint. job = service.name,
+      # instance = service.instance.id; other resource attributes stay on
+      # target_info rather than on every series.
+      prometheus:
+        endpoint: 0.0.0.0:8889
+
+    service:
+      extensions: [bearertokenauth, health_check]
+      telemetry:
+        logs: {level: warn}
+        metrics:
+          level: normal
+          readers:
+            - pull:
+                exporter:
+                  prometheus: {host: 0.0.0.0, port: 8888}
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/pii, batch]
+          exporters: [otlphttp/loki]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/pii, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/pii, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: otel-collector, namespace: observability}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata:
+      labels: {app: otel-collector}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: otelcol
+          image: otel/opentelemetry-collector-contrib:0.164.0
+          args: ["--config=/etc/otelcol/config.yaml"]
+          env:
+            - name: OTLP_TOKEN
+              valueFrom: {secretKeyRef: {name: otel-ingest-token, key: token}}
+            - name: GOMEMLIMIT
+              value: 180MiB
+          ports:
+            - {name: otlp-http, containerPort: 4318}
+            - {name: metrics, containerPort: 8888}
+            - {name: app-metrics, containerPort: 8889}
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits:   {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels: {app: otel-collector}
+spec:
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+    - {name: metrics, port: 8888, targetPort: 8888}
+    - {name: app-metrics, port: 8889, targetPort: 8889}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels: {release: kube-prometheus-stack}
+spec:
+  selector: {matchLabels: {app: otel-collector}}
+  endpoints:
+    # The collector's own health: refused and dropped data, queue sizes.
+    - port: metrics
+      interval: 30s
+    # WindoM's metrics. honorLabels keeps job="windom-api" and the Fly
+    # machine as instance, rather than the collector's own pod.
+    - port: app-metrics
+      interval: 30s
+      honorLabels: true
+---
+# ---------------------------------------------------------------- Edge
+# Public, no oauth2-proxy: the bearer token is checked by the collector.
+# Traefik only bounds the cost of a request before it gets there.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: otel-body-limit, namespace: observability}
+spec:
+  buffering:
+    maxRequestBodyBytes: 4194304
+---
+# Every client shares one source address behind ServiceLB (#7), so this is a
+# global ceiling on the endpoint, not a per-client limit. WindoM batches, so it
+# sends a few requests a second at most.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: otel-rate-limit, namespace: observability}
+spec:
+  rateLimit:
+    average: 50
+    burst: 200
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: otel
+  namespace: observability
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: observability-otel-rate-limit@kubernetescrd,observability-otel-body-limit@kubernetescrd
+spec:
+  rules:
+    - host: otel.yehudabriskman.com
+      http: {paths: [{path: /v1/, pathType: Prefix, backend: {service: {name: otel-collector, port: {number: 4318}}}}]}
+---
+# ---------------------------------------------------------------- Loki
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: loki, namespace: observability}
+data:
+  config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+      log_level: warn
+    common:
+      path_prefix: /loki
+      replication_factor: 1
+      ring: {kvstore: {store: inmemory}}
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+    schema_config:
+      configs:
+        - from: "2026-11-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index: {prefix: index_, period: 24h}
+    limits_config:
+      # 14 days. The privacy policy promises 30 days or less; the compactor
+      # below is what actually deletes.
+      retention_period: 336h
+      max_query_lookback: 336h
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      allow_structured_metadata: true
+      ingestion_rate_mb: 4
+      ingestion_burst_size_mb: 8
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      retention_delete_delay: 2h
+      delete_request_store: filesystem
+    ruler:
+      storage:
+        type: local
+        local: {directory: /etc/loki/rules}
+      rule_path: /loki/ruler-scratch
+      alertmanager_url: http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+      enable_alertmanager_v2: true
+    pattern_ingester: {enabled: false}
+    analytics: {reporting_enabled: false}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: loki, namespace: observability}
+spec:
+  serviceName: loki
+  replicas: 1
+  selector: {matchLabels: {app: loki}}
+  template:
+    metadata:
+      labels: {app: loki}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001          # local-path volumes mount root-owned
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: loki
+          image: grafana/loki:3.7.9
+          args: ["-config.file=/etc/loki/config.yaml", "-target=all"]
+          ports: [{name: http, containerPort: 3100}]
+          readinessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 192Mi}
+            limits:   {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki/config.yaml, subPath: config.yaml}
+            - {name: rules, mountPath: /etc/loki/rules/fake}   # "fake" = the single tenant
+            - {name: data, mountPath: /loki}
+      volumes:
+        - name: config
+          configMap: {name: loki}
+        - name: rules
+          configMap: {name: loki-rules}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        storageClassName: local-path
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 10Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: loki, namespace: observability}
+spec:
+  selector: {app: loki}
+  ports: [{name: http, port: 3100, targetPort: 3100}]
+---
+# ---------------------------------------------------------------- Tempo
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: tempo, namespace: observability}
+data:
+  config.yaml: |
+    server:
+      http_listen_port: 3200
+      log_level: warn
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc: {endpoint: 0.0.0.0:4317}
+    ingester:
+      max_block_duration: 5m
+    compactor:
+      compaction:
+        block_retention: 168h   # 7 days
+    storage:
+      trace:
+        backend: local
+        wal: {path: /var/tempo/wal}
+        local: {path: /var/tempo/blocks}
+    usage_report: {reporting_enabled: false}
+    # Tempo 3.x replaced the ingester/compactor with a new storage design and
+    # rejects this config. 2.10 is the maintained single-binary line; moving
+    # to 3.x is a rewrite of this block, not a version bump.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: tempo, namespace: observability}
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector: {matchLabels: {app: tempo}}
+  template:
+    metadata:
+      labels: {app: tempo}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.10.10
+          args: ["-config.file=/etc/tempo/config.yaml"]
+          ports:
+            - {name: http, containerPort: 3200}
+            - {name: otlp-grpc, containerPort: 4317}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits:   {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/tempo}
+            - {name: data, mountPath: /var/tempo}
+      volumes:
+        - name: config
+          configMap: {name: tempo}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        storageClassName: local-path
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 10Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: tempo, namespace: observability}
+spec:
+  selector: {app: tempo}
+  ports:
+    - {name: http, port: 3200, targetPort: 3200}
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
