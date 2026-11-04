@@ -57,6 +57,11 @@ resource "oci_core_instance" "arm" {
 
   lifecycle {
     # Image updates should not silently destroy and recreate a running node.
-    ignore_changes = [source_details[0].source_id]
+    # Neither should an edit to cloud-init.yaml (#25 changed it). OCI cannot
+    # update user_data in place, so a change to it plans a replacement of the
+    # instance, and cloud-init runs only at first boot anyway: a new user_data
+    # can only ever matter to a NEW node. A deliberate rebuild
+    # (`tofu apply -replace=oci_core_instance.arm`) still uses it.
+    ignore_changes = [source_details[0].source_id, metadata["user_data"]]
   }
 }
