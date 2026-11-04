@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>oci-free architecture</title>
+  <desc>OpenTofu provisions an Always Free ARM VM on Oracle Cloud. k3s runs on it with Traefik as ingress; workloads are the portfolio site in prod and preprod namespaces, a git server, a CouchDB, monitoring, telemetry and nightly backups. Visitors arrive over HTTPS; administration and CI rollouts arrive over a private network.</desc>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b93a7"/>
+    </marker>
+    <marker id="arrp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b48ef0"/>
+    </marker>
+  </defs>
+  <style>
+    .t{fill:#e8e6e1;font-size:15px;font-weight:600}
+    .s{fill:#a9aebb;font-size:12.5px}
+    .h{fill:#e8e6e1;font-size:13px;font-weight:700;letter-spacing:.08em}
+    .box{fill:#22252d;stroke:#3a3f4b;stroke-width:1.2}
+    .ns{fill:#1d2027;stroke:#343946;stroke-width:1;stroke-dasharray:4 3}
+    .edge{stroke:#8b93a7;stroke-width:1.6;fill:none}
+    .priv{stroke:#b48ef0;stroke-width:1.6;fill:none;stroke-dasharray:6 4}
+    .lbl{fill:#8b93a7;font-size:12px}
+    .lblp{fill:#b48ef0;font-size:12px}
+  </style>
+  <rect width="1200" height="780" fill="#15171c"/>
+
+  <!-- Outside -->
+  <rect class="box" x="30" y="40" width="220" height="70" rx="10"/>
+  <text class="t" x="50" y="70">Visitors</text>
+  <text class="s" x="50" y="92">public internet, HTTPS</text>
+
+  <rect class="box" x="30" y="300" width="220" height="86" rx="10"/>
+  <text class="t" x="50" y="330">Operator</text>
+  <text class="s" x="50" y="352">kubectl, helm, ssh</text>
+  <text class="s" x="50" y="370">over a private network</text>
+
+  <rect class="box" x="30" y="430" width="220" height="104" rx="10"/>
+  <text class="t" x="50" y="460">portfolio_site CI</text>
+  <text class="s" x="50" y="482">GitHub Actions: builds, scans,</text>
+  <text class="s" x="50" y="500">publishes images to GHCR, then</text>
+  <text class="s" x="50" y="518">rolls out by digest</text>
+
+  <rect class="box" x="30" y="600" width="220" height="104" rx="10"/>
+  <text class="t" x="50" y="630">OpenTofu (this repo)</text>
+  <text class="s" x="50" y="652">VCN, subnet, security list,</text>
+  <text class="s" x="50" y="670">internet gateway, A1 instance,</text>
+  <text class="s" x="50" y="688">cloud-init bootstrap</text>
+
+  <!-- Cloud boundary -->
+  <rect x="300" y="20" width="870" height="740" rx="16" fill="none" stroke="#4a5060" stroke-width="1.4"/>
+  <text class="h" x="324" y="50">ORACLE CLOUD · ALWAYS FREE TENANCY</text>
+
+  <rect x="324" y="66" width="822" height="676" rx="12" fill="#191b21" stroke="#3a3f4b"/>
+  <text class="h" x="344" y="94">ONE AMPERE A1 ARM VM · UBUNTU · K3S</text>
+  <text class="s" x="344" y="114">host firewall guard (systemd) · single node · local-path volumes on the boot disk</text>
+
+  <!-- Traefik -->
+  <rect class="box" x="344" y="134" width="782" height="64" rx="10" style="fill:#26303a;stroke:#4c6a80"/>
+  <text class="t" x="364" y="162">Traefik ingress (bundled with k3s)</text>
+  <text class="s" x="364" y="184">TLS from cert-manager (Let's Encrypt wildcard) · SSO gate via oauth2-proxy (GitHub sign-in) · private-only allowlist middleware</text>
+
+  <!-- Namespaces row 1 -->
+  <rect class="ns" x="344" y="222" width="250" height="150" rx="10"/>
+  <text class="h" x="362" y="248">PROD</text>
+  <text class="t" x="362" y="276">web · api</text>
+  <text class="s" x="362" y="298">the public site; images are</text>
+  <text class="s" x="362" y="316">set by CI, not the manifests</text>
+  <text class="s" x="362" y="342">admin routes behind SSO</text>
+
+  <rect class="ns" x="610" y="222" width="250" height="150" rx="10"/>
+  <text class="h" x="628" y="248">PREPROD</text>
+  <text class="t" x="628" y="276">web · api · CouchDB · mail sink</text>
+  <text class="s" x="628" y="298">whatever is on main;</text>
+  <text class="s" x="628" y="316">private network only, noindex,</text>
+  <text class="s" x="628" y="334">its own content store</text>
+
+  <rect class="ns" x="876" y="222" width="250" height="150" rx="10"/>
+  <text class="h" x="894" y="248">CONTENT STORE</text>
+  <text class="t" x="894" y="276">CouchDB (Helm)</text>
+  <text class="s" x="894" y="298">shared document store;</text>
+  <text class="s" x="894" y="316">private network only,</text>
+  <text class="s" x="894" y="334">plus basic auth</text>
+
+  <!-- Namespaces row 2 -->
+  <rect class="ns" x="344" y="392" width="250" height="150" rx="10"/>
+  <text class="h" x="362" y="418">GIT</text>
+  <text class="t" x="362" y="446">Forgejo + runner (Helm)</text>
+  <text class="s" x="362" y="468">self-hosted git server;</text>
+  <text class="s" x="362" y="486">private network only</text>
+
+  <rect class="ns" x="610" y="392" width="250" height="150" rx="10"/>
+  <text class="h" x="628" y="418">MONITORING</text>
+  <text class="t" x="628" y="446">kube-prometheus-stack</text>
+  <text class="s" x="628" y="468">Prometheus, Alertmanager,</text>
+  <text class="s" x="628" y="486">Grafana behind SSO</text>
+
+  <rect class="ns" x="876" y="392" width="250" height="150" rx="10"/>
+  <text class="h" x="894" y="418">TELEMETRY</text>
+  <text class="t" x="894" y="446">OTel collector · Loki · Tempo</text>
+  <text class="s" x="894" y="468">OTLP ingest for an external app;</text>
+  <text class="s" x="894" y="486">token-gated, PII stripped,</text>
+  <text class="s" x="894" y="504">default-deny network policy</text>
+
+  <!-- Backups -->
+  <rect class="ns" x="344" y="562" width="782" height="80" rx="10"/>
+  <text class="h" x="362" y="588">BACKUPS</text>
+  <text class="s" x="362" y="612">nightly CronJobs: CouchDB dump (14-day window) and forgejo dump, each to its own volume on the same disk.</text>
+  <text class="s" x="362" y="630">Guards against application-level loss and volume deletion, not against losing the node.</text>
+
+  <!-- CI rbac -->
+  <rect class="ns" x="344" y="662" width="782" height="62" rx="10"/>
+  <text class="h" x="362" y="688">CI ACCESS</text>
+  <text class="s" x="362" y="710">per-environment service accounts: roll out web/api in one namespace only, plus a read-only drift reader</text>
+
+  <!-- Edges -->
+  <path class="edge" d="M250,75 C300,75 300,166 344,166" marker-end="url(#arr)"/>
+  <text class="lbl" x="258" y="128">443</text>
+  <path class="priv" d="M250,343 C290,343 300,250 324,250" marker-end="url(#arrp)"/>
+  <path class="priv" d="M250,482 C290,482 300,693 344,693" marker-end="url(#arrp)"/>
+  <text class="lblp" x="256" y="560">private network</text>
+  <path class="edge" d="M250,652 C285,652 290,740 324,740" marker-end="url(#arr)"/>
+  <text class="lbl" x="256" y="728">provisions</text>
+</svg>
