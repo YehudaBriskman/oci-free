@@ -1,0 +1,58 @@
+# Read-only access for Bothy's Grafana (the WSL dev box) to this cluster's
+# Prometheus, Loki and Tempo, through the API server's service proxy:
+#
+#   https://<node>:6443/api/v1/namespaces/<ns>/services/<svc>:<port>/proxy/...
+#
+# Why the service proxy: :6443 is already open to the tailnet and authenticated,
+# so this adds no port, no Ingress and no NodePort (node/oci-free-guard.sh
+# would drop one anyway). The account may only GET, and only through these
+# three named Services. It cannot push to Loki, reach any other Service, or
+# read Secrets or pods. Grafana's Prometheus datasource is set to GET; Loki and
+# Tempo query over GET already.
+#
+# The token is a long-lived ServiceAccount token, because a Grafana datasource
+# needs a static one. Revoke: delete the Secret bothy-grafana-token (a re-apply
+# mints a new one).
+# Bothy side: scripts/gen-oci-grafana-token.sh in YehudaBriskman/Bothy.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: bothy-grafana, namespace: monitoring}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bothy-grafana-token
+  namespace: monitoring
+  annotations: {kubernetes.io/service-account.name: bothy-grafana}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: bothy-grafana-read, namespace: monitoring}
+rules:
+  - apiGroups: [""]
+    resources: [services/proxy]
+    resourceNames: ["kube-prometheus-stack-prometheus:9090"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: bothy-grafana-read, namespace: monitoring}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: bothy-grafana-read}
+subjects: [{kind: ServiceAccount, name: bothy-grafana, namespace: monitoring}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: bothy-grafana-read, namespace: observability}
+rules:
+  - apiGroups: [""]
+    resources: [services/proxy]
+    resourceNames: ["loki:3100", "tempo:3200"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: bothy-grafana-read, namespace: observability}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: bothy-grafana-read}
+subjects: [{kind: ServiceAccount, name: bothy-grafana, namespace: monitoring}]
