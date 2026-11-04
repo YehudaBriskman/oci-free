@@ -43,11 +43,26 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {name: web, namespace: prod}
 spec:
-  replicas: 1
+  # Two, so a crash or an eviction is not an outage (#35). nginx serving a
+  # baked bundle holds nothing between requests; 2 x 32Mi requested.
+  replicas: 2
+  # A rollout adds the new pod and waits for its readiness probe before it
+  # removes an old one, so there is never a moment with fewer than two ready.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
   selector: {matchLabels: {app: web}}
   template:
     metadata: {labels: {app: web}}
     spec:
+      # One node today, so this changes nothing yet. ScheduleAnyway rather than
+      # DoNotSchedule, or the second replica would sit Pending on one node.
+      # When a second node joins, new pods spread over the two by themselves.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: web}}
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: web
@@ -104,11 +119,38 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {name: api, namespace: prod}
 spec:
-  replicas: 1
+  # Two, because the API keeps no state a second copy could disagree with
+  # (#35, read from portfolio_site at 546365a):
+  #  - every record, the media library included, is in CouchDB; the only local
+  #    files are read-only images baked into the image (images.service.ts);
+  #  - the remote MCP transport is stateless (sessionIdGenerator: undefined,
+  #    mcp/router.ts), its OAuth state is CouchDB documents, and its tickets
+  #    never leave the process that issued them (mcp/internal.ts);
+  #  - the in-memory maps are caches that refill themselves (og.ts PNGs, the
+  #    contribution year, the SEO shell) or write throttles (lastUsedAt);
+  #  - the 15-minute GitHub stats refresh runs in each pod, and that is
+  #    harmless: it re-puts the same documents, and CouchDB's revision check
+  #    turns a collision into a 409 that the next tick retries.
+  # The one cost: express-rate-limit counts in memory, per pod, so a client
+  # spread across both can get up to twice each limit (contact form 5 -> 10
+  # sends per 15 minutes; bearer failures 10 -> 20, against 256-bit tokens).
+  # A shared store is the fix if that ever matters.
+  #
+  # Memory: limits are 512Mi each, three pods at most during a rollout, so
+  # 1.5Gi in the worst case on a 12 GB node; requests stay at 64Mi each.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
   selector: {matchLabels: {app: api}}
   template:
     metadata: {labels: {app: api}}
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app: api}}
       imagePullSecrets: [{name: ghcr-pull}]
       containers:
         - name: api
@@ -123,6 +165,15 @@ spec:
           resources:
             requests: {cpu: 20m, memory: 64Mi}
             limits:   {memory: 512Mi}
+          # Without one, a new pod took traffic the moment its container
+          # started, before Express was listening, and maxUnavailable: 0 would
+          # gate on nothing. /health and not /health/ready: ready also asks
+          # CouchDB, and a store outage must not pull every API pod out of the
+          # Service, since /api/email and the crawler files work without it.
+          readinessProbe:
+            httpGet: {path: /health, port: 5000}
+            initialDelaySeconds: 2
+            periodSeconds: 5
 ---
 # The name "api" is load-bearing: the frontend's nginx.conf proxies /api/ to
 # port 5000 on it, so this Service must keep that exact name in this namespace.
@@ -173,3 +224,25 @@ spec:
       http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: web, port: {number: 80}}}}]}
     - host: www.yehudabriskman.com
       http: {paths: [{path: /, pathType: Prefix, backend: {service: {name: web, port: {number: 80}}}}]}
+---
+# At most one of each may be evicted at a time (#35). A voluntary disruption
+# (a drain, a k3s upgrade) then always leaves one ready pod serving.
+#
+# On this single node that has a consequence worth knowing before you need it:
+# `kubectl drain` evicts one pod of each, cannot place the replacement on the
+# cordoned node, and then waits on the second for as long as you let it. Drain
+# with a --timeout, or accept the outage a one-node drain is anyway and run it
+# with --disable-eviction.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: prod}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: web}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: api, namespace: prod}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: api}}
