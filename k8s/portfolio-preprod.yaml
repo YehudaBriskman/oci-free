@@ -59,8 +59,9 @@
 #    password for it. Seeding it is in the README.
 #
 # Everything here is applied by hand, like the rest of k8s/. CI only ever
-# patches the image on `web` and `api`; see ci-rollout-rbac.yaml for exactly
-# how much it is allowed to do in this namespace.
+# sets the image on `web` and `api`, but the `patch` it holds to do that
+# covers their whole pod template; see ci-rollout-rbac.yaml for exactly how
+# much its preprod-only token is allowed to do in this namespace.
 #
 #   ./k8s/portfolio-apply.sh preprod    # once it has run, plain
 #                                       # `kubectl apply -f` is safe too
