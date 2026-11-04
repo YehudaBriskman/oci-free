@@ -29,7 +29,7 @@ trap 'rm -rf "$base"' EXIT
 bin=$base/bin
 mkdir -p "$bin"
 cp tests/stubs/kubectl "$bin/kubectl"
-for t in ssh rsync flyctl; do cp tests/stubs/recorder "$bin/$t"; done
+for t in ssh rsync flyctl iptables ip6tables; do cp tests/stubs/recorder "$bin/$t"; done
 export PATH="$bin:$PATH"
 
 # ------------------------------------------------------------ harness -------
@@ -319,6 +319,27 @@ t_fly_ok() {
     check "token not printed" lacks "$OUT$ERR" "$tok"
 }
 t "otel-token-to-fly: a good token reaches Fly on stdin only" t_fly_ok
+
+# ------------------------------------------------- host firewall guard -------
+# On OCI 169.254.169.254 is the metadata service (HTTP) AND the VCN DNS
+# resolver (53). A whole-address DROP broke every external DNS lookup in pods
+# (2026-11-04: Alertmanager could not resolve smtp.gmail.com). DNS must be
+# let through BEFORE the drop, and only DNS.
+t_guard_dns() {
+  run node/oci-free-guard.sh apply
+  local imds='iptables -t mangle -A OCI-FREE-GUARD -s 10.42.0.0/16 -d 169.254.169.254/32'
+  local u d tc
+  u=$(call_no "^$imds -p udp --dport 53 -j RETURN$")
+  tc=$(call_no "^$imds -p tcp --dport 53 -j RETURN$")
+  d=$(call_no "^$imds -j DROP$")
+  check "exit 0 (rc $RC: $ERR)" [ "$RC" -eq 0 ] &&
+    check "udp/53 let through" [ -n "$u" ] &&
+    check "tcp/53 let through" [ -n "$tc" ] &&
+    check "the rest of 169.254.169.254 still dropped" [ -n "$d" ] &&
+    check "DNS rules come before the drop ($u,$tc < $d)" [ "$u" -lt "$d" ] && [ "$tc" -lt "$d" ] &&
+    check "no other port let through to it" [ "$(grep -cE -- "^$imds -p .* -j RETURN$" "$STUB_DIR/calls")" -eq 2 ]
+}
+t "oci-free-guard: pods keep DNS to the VCN resolver, metadata stays blocked" t_guard_dns
 
 echo
 echo "scripts: $pass passed, $fail failed"

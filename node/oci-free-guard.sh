@@ -10,6 +10,7 @@
 # DROP, and only NEW connections, so nothing already open is cut.
 #
 #  1. Pods may not reach the instance metadata service (169.254.169.254).
+#     DNS (53) to the same address is allowed: it is also the VCN resolver.
 #     It serves this instance's user_data, which carried the Tailscale auth
 #     key, for the life of the instance. hostNetwork pods use the host's own
 #     stack (OUTPUT), so they are not covered; they are privileged anyway.
@@ -30,6 +31,14 @@ build() {  # build <iptables|ip6tables>
   local t=$1
   $t -t mangle -N OCI-FREE-GUARD 2>/dev/null || $t -t mangle -F OCI-FREE-GUARD
   if [ "$t" = iptables ]; then
+    # Port 53 first: on OCI 169.254.169.254 is ALSO the VCN DNS resolver, and
+    # CoreDNS forwards every external name there. Dropping it whole broke all
+    # external DNS in pods (Alertmanager could not resolve smtp.gmail.com).
+    # Metadata is HTTP on 80, which stays dropped.
+    local p
+    for p in udp tcp; do
+      $t -t mangle -A OCI-FREE-GUARD -s "$POD_CIDR" -d 169.254.169.254/32 -p "$p" --dport 53 -j RETURN
+    done
     $t -t mangle -A OCI-FREE-GUARD -s "$POD_CIDR" -d 169.254.169.254/32 -j DROP
   fi
   local new=(-i tailscale0 -m addrtype --dst-type LOCAL -m conntrack --ctstate NEW)
