@@ -103,15 +103,28 @@ push a tag   ──▶ build + test ──▶ ghcr.io/…:<sha> ──▶ set im
                                               not 200? ──▶ rollout undo
 ```
 
-The tag is a commit sha, not `:latest`, so a rollout either lands a specific
-build or fails. The API server stays off the internet; the runner joins the
+What rolls out is a digest (`<app>@sha256:…`) from the release manifest CI
+records in GHCR, so a rollout either lands a specific build or fails. The API server stays off the internet; the runner joins the
 tailnet for the length of the job with an ephemeral node.
 
-`:latest` means the last *release* and nothing else. It is what a fresh
-`kubectl apply` of either manifest lands on, so if it moved on every merge an
-apply between releases would quietly put unreleased code on the live site.
-Preprod does not change that: it rolls out the sha like prod does, and writes
-no tag at all.
+**CI owns the image; the manifests do not name one (#25).** `web` and `api`
+in `k8s/portfolio.yaml` and `k8s/portfolio-preprod.yaml` have no `image:`
+field, so `kubectl apply -f` of either one updates everything else and leaves
+the running digest alone. Until 2026-11-04 they said `:latest`, and an apply
+of the preprod manifest put the last release back over CI's `main` digest.
+
+A Deployment cannot be created without an image, so the first apply into a
+namespace, and the one-time migration of a Deployment last applied from the
+old manifest, go through the script (it refuses any cluster without the
+`free-arm` node):
+
+```sh
+./k8s/portfolio-apply.sh prod       # or preprod; safe to re-run
+```
+
+It creates a missing Deployment at `:latest` and lets CI's next deploy pin it.
+`:latest` means the last *release* and nothing else, and moves only after a
+passing prod deploy; preprod writes no tag at all.
 
 ### Preprod
 
@@ -150,8 +163,8 @@ Nothing here moves the idle-reclamation numbers in the wrong direction —
 memory is the only lever Oracle actually measures, and this adds to it.
 
 ```sh
-kubectl apply -f k8s/portfolio-preprod.yaml \
-               -f k8s/tailnet-only-middleware.yaml \
+./k8s/portfolio-apply.sh preprod  # creates web/api if missing, then applies
+kubectl apply -f k8s/tailnet-only-middleware.yaml \
                -f k8s/ci-rollout-rbac.yaml
 ./k8s/preprod-secrets.sh        # generates what it needs; copies ghcr-pull
 ```
@@ -261,7 +274,45 @@ shell and the page still loads with the wrong `<title>`.
 ```sh
 tofu init && tofu apply          # instance + network
 kubectl apply -f k8s/            # after k3s install and kubeconfig merge
+./k8s/portfolio-apply.sh prod    # web/api: the apply above cannot create them
+./k8s/portfolio-apply.sh preprod
 ```
+
+Then the Helm releases below, each at its recorded `--version`.
 
 Secrets (`terraform.tfvars`, `.cf-token`, `.github-oauth`) are gitignored and must
 be recreated by hand.
+
+## Helm releases
+
+Three charts are installed with Helm, and until #25 no chart version was
+written down anywhere, so a rebuild would have installed whatever each chart
+was on the day. The versions below are the ones to install. **They are not
+filled in yet**: nothing in this repository could read them, so the owner
+records them from the live cluster:
+
+```sh
+helm list -A -o json \
+  | jq -r '.[] | "| `\(.name)` | `\(.namespace)` | `\(.chart)` | \(.app_version) |"'
+helm repo list                   # the repository URL each chart came from
+```
+
+and pastes the rows over the `TODO` ones. `chart` prints as `<chart>-<version>`.
+
+| Release | Namespace | Chart (name-version) | App version | Values |
+|---|---|---|---|---|
+| `kube-prometheus-stack` | `monitoring` | TODO | TODO | `k8s/monitoring-values.yaml` |
+| TODO | TODO | forgejo TODO | TODO | `k8s/forgejo-values.yaml` |
+| TODO | TODO | couchdb TODO | TODO | `k8s/couchdb-values.yaml` |
+
+Every install or upgrade names the version, so an upgrade is a decision and
+not a side effect of `helm repo update`:
+
+```sh
+helm upgrade --install <release> <repo>/<chart> -n <namespace> \
+  -f k8s/<values>.yaml --version <version from the table>
+```
+
+Bump a version by changing the table in the same commit as the upgrade. Traefik
+is not in this table: k3s installs it from its own bundled HelmChart, so its
+version follows the k3s version.

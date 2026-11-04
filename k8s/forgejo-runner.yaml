@@ -1,5 +1,20 @@
 # Native arm64 CI. Registers against the in-cluster service URL, not the public
 # hostname, so CI keeps working regardless of DNS or ingress state.
+#
+# Every image here is pinned by digest (#25): the runner, the dind daemon, and
+# the two job images in --labels. A tag is a pointer the publisher can move, so
+# `docker:27-dind` meant "whatever was pushed last", and the job images run
+# every workflow's code with the dind socket in reach. Each digest is the
+# MULTI-ARCH INDEX, not the arm64 manifest, so the node still picks its own
+# platform; the tag stays in front of the `@` for the reader and is ignored by
+# the pull. Resolved 2026-11-04 with:
+#
+#   docker buildx imagetools inspect <image:tag>    # the top-level "Digest:"
+#
+# To bump one: inspect the new tag, replace both halves, apply. The job images
+# are read only at registration, which runs whenever /data (an emptyDir) is
+# fresh, i.e. on every new pod: `kubectl -n forgejo rollout restart
+# deploy/forgejo-runner` after an apply that only changes --labels.
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: forgejo-runner, namespace: forgejo}
@@ -12,7 +27,7 @@ spec:
     spec:
       initContainers:
         - name: register
-          image: code.forgejo.org/forgejo/runner:6.3.1
+          image: code.forgejo.org/forgejo/runner:6.3.1@sha256:5071e6832313bafe71577e05631bece88caff08fcfb372193e4a21941f4ed54b
           command: ["sh","-c"]
           args:
             - |
@@ -22,7 +37,7 @@ spec:
                 --instance http://forgejo-http.forgejo.svc.cluster.local:3000 \
                 --token "$RUNNER_TOKEN" \
                 --name oci-arm-runner \
-                --labels docker:docker://node:22-bookworm,ubuntu-latest:docker://catthehacker/ubuntu:act-22.04
+                --labels docker:docker://node:22-bookworm@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd,ubuntu-latest:docker://catthehacker/ubuntu:act-22.04@sha256:3488f78aa97770c8d5d835f2913c1a782d3121ad3f2aafb17054fb1d554ea4e1
           env:
             - name: RUNNER_TOKEN
               valueFrom: {secretKeyRef: {name: forgejo-runner-token, key: token}}
@@ -30,7 +45,7 @@ spec:
           volumeMounts: [{name: data, mountPath: /data}]
       containers:
         - name: runner
-          image: code.forgejo.org/forgejo/runner:6.3.1
+          image: code.forgejo.org/forgejo/runner:6.3.1@sha256:5071e6832313bafe71577e05631bece88caff08fcfb372193e4a21941f4ed54b
           # dind takes a few seconds to listen; without this the daemon starts first,
           # fails to reach the socket, and the container crashloops.
           command: ["sh","-c"]
@@ -49,7 +64,7 @@ spec:
             limits:   {memory: 512Mi}
           volumeMounts: [{name: data, mountPath: /data}]
         - name: dind
-          image: docker:27-dind
+          image: docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
           securityContext: {privileged: true}
           env:
             - {name: DOCKER_TLS_CERTDIR, value: ""}
