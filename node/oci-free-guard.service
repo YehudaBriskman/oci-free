@@ -1,0 +1,13 @@
+[Unit]
+Description=oci-free host firewall guard (#18): no IMDS from pods, tailnet ports 22/80/443/6443 only
+After=network-online.target netfilter-persistent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/oci-free-guard apply
+ExecStop=/usr/local/sbin/oci-free-guard remove
+
+[Install]
+WantedBy=multi-user.target
