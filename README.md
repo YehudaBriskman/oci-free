@@ -278,5 +278,41 @@ kubectl apply -f k8s/            # after k3s install and kubeconfig merge
 ./k8s/portfolio-apply.sh preprod
 ```
 
+Then the Helm releases below, each at its recorded `--version`.
+
 Secrets (`terraform.tfvars`, `.cf-token`, `.github-oauth`) are gitignored and must
 be recreated by hand.
+
+## Helm releases
+
+Three charts are installed with Helm, and until #25 no chart version was
+written down anywhere, so a rebuild would have installed whatever each chart
+was on the day. The versions below are the ones to install. **They are not
+filled in yet**: nothing in this repository could read them, so the owner
+records them from the live cluster:
+
+```sh
+helm list -A -o json \
+  | jq -r '.[] | "| `\(.name)` | `\(.namespace)` | `\(.chart)` | \(.app_version) |"'
+helm repo list                   # the repository URL each chart came from
+```
+
+and pastes the rows over the `TODO` ones. `chart` prints as `<chart>-<version>`.
+
+| Release | Namespace | Chart (name-version) | App version | Values |
+|---|---|---|---|---|
+| `kube-prometheus-stack` | `monitoring` | TODO | TODO | `k8s/monitoring-values.yaml` |
+| TODO | TODO | forgejo TODO | TODO | `k8s/forgejo-values.yaml` |
+| TODO | TODO | couchdb TODO | TODO | `k8s/couchdb-values.yaml` |
+
+Every install or upgrade names the version, so an upgrade is a decision and
+not a side effect of `helm repo update`:
+
+```sh
+helm upgrade --install <release> <repo>/<chart> -n <namespace> \
+  -f k8s/<values>.yaml --version <version from the table>
+```
+
+Bump a version by changing the table in the same commit as the upgrade. Traefik
+is not in this table: k3s installs it from its own bundled HelmChart, so its
+version follows the k3s version.
