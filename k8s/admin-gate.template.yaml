@@ -9,16 +9,16 @@
 # 3, a request aimed straight at the public ingress would reach the same API
 # Service carrying whatever headers it liked. The API requires both the secret
 # and the expected login, so neither alone is enough.
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata: {name: strip-identity, namespace: prod}
-spec:
-  headers:
-    customRequestHeaders:
-      X-Auth-Request-User: ""
-      X-Auth-Request-Email: ""
-      X-Admin-Proxy-Secret: ""
----
+#
+# Step 1's Middleware, prod/strip-identity, is declared in k8s/portfolio.yaml,
+# because the public Ingress uses it too (oci-free #22). Apply that file first;
+# without it Traefik refuses this router, which fails closed.
+#
+# Trace, for anyone changing either file: this Ingress sends /api straight to
+# the api Service, so the admin host's API calls never pass web's nginx. That
+# is why prod's web Deployment can set NGINX_FORWARD_IDENTITY=off. Preprod
+# differs: its one Ingress sends everything, /api included, through nginx.
+#
 # Traefik Middlewares are namespace-scoped, so the one in `monitoring` cannot be
 # referenced from a prod Ingress. This is the same shape, recreated here.
 apiVersion: traefik.io/v1alpha1
