@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 #
-# Makes the admin area usable on preprod: renders the `inject-proxy-secret`
-# Middleware from preprod's OWN ADMIN_PROXY_SECRET (in portfolio-api-env,
-# written by preprod-secrets.sh), then applies portfolio-preprod.yaml, whose
-# Ingress runs strip-identity -> github-auth -> inject-proxy-secret -> noindex.
+# Makes the admin area usable on preprod. It creates the two admin-gate
+# Middlewares and sets the Ingress's middleware chain, and NOTHING else:
 #
-#   ./k8s/preprod-admin-gate.sh
+#   strip-identity -> github-auth -> inject-proxy-secret -> noindex
 #
-# The secret never touches disk, argv or the terminal: it is read from the
-# cluster and piped to `kubectl apply -f -`. Re-running is safe. After
-# `preprod-secrets.sh --rotate`, run this again so the stamp matches the API.
+#   ./k8s/preprod-admin-gate.sh        # run where kubectl reaches the OCI k3s
+#
+# It deliberately does not `kubectl apply -f portfolio-preprod.yaml`. That
+# manifest pins web and api to `:latest`, while CI deploys by digest, so a
+# full apply silently swaps preprod back to the last release (it did, on
+# 2026-11-04; #25 tracks pinning). The manifest stays the source of truth for
+# the Ingress annotation; this script applies only that one field.
+#
+# `inject-proxy-secret` carries preprod's OWN ADMIN_PROXY_SECRET, read from
+# portfolio-api-env and piped to `kubectl apply -f -`: never on disk, argv or
+# the terminal. Re-running is safe. After `preprod-secrets.sh --rotate`, run
+# this again so the stamp matches the API.
 set -euo pipefail
 NS=preprod
-HERE=$(cd "$(dirname "$0")" && pwd)
+NODE=free-arm
+CHAIN="preprod-strip-identity@kubernetescrd,preprod-github-auth@kubernetescrd,preprod-inject-proxy-secret@kubernetescrd,preprod-noindex@kubernetescrd"
+
+# The wrong cluster is the likeliest mistake: kubectl's current context is
+# whatever was used last. Refuse anything that is not the OCI node.
+if ! kubectl get node "$NODE" >/dev/null 2>&1; then
+  echo "refusing: kubectl context '$(kubectl config current-context 2>/dev/null || echo none)' has no node '$NODE'; this is not the OCI cluster" >&2
+  exit 1
+fi
+kubectl get namespace "$NS" >/dev/null
 
 secret=$(kubectl -n "$NS" get secret portfolio-api-env -o jsonpath='{.data.ADMIN_PROXY_SECRET}' | base64 -d)
 if [ -z "$secret" ]; then
@@ -23,6 +39,16 @@ fi
 kubectl apply -f - <<YAML
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
+metadata: {name: strip-identity, namespace: $NS}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Auth-Request-User: ""
+      X-Auth-Request-Email: ""
+      X-Admin-Proxy-Secret: ""
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
 metadata: {name: inject-proxy-secret, namespace: $NS}
 spec:
   headers:
@@ -31,5 +57,6 @@ spec:
 YAML
 unset secret
 
-kubectl apply -f "$HERE/portfolio-preprod.yaml"
-echo "preprod admin gate applied: open https://preprod.yehudabriskman.com/admin"
+kubectl -n "$NS" annotate ingress portfolio --overwrite \
+  "traefik.ingress.kubernetes.io/router.middlewares=$CHAIN"
+echo "preprod admin gate applied (images untouched): open https://preprod.yehudabriskman.com/admin"
