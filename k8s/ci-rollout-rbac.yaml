@@ -1,116 +1,220 @@
-# The account CI rolls out with, and nothing else it can do.
+# The accounts CI deploys and checks with, one per job that needs one (#16).
 #
-# A rollout needs to read two Deployments and patch their image. That is the
-# whole job, so that is the whole grant. The alternative — handing the
-# cluster-admin kubeconfig to GitHub Actions — puts a credential that can do
-# anything to this cluster into a third party's secret storage, to perform an
-# operation that needs two verbs on two objects.
+#   ci-deploy  in `preprod`  rolls out `main`; can do nothing in `prod`
+#   ci-deploy  in `prod`     rolls out a `v*` tag; can do nothing in `preprod`
+#   ci-drift   in `prod`     the daily drift check: reads two Deployments in
+#                            each namespace, changes nothing
 #
-# Namespaced on purpose: a Role rather than a ClusterRole means this token
-# cannot see, let alone touch, anything outside the namespaces named below.
+# Three tokens rather than one. Until #16 a single account held both
+# namespaces, and its token sat in one repository-level GitHub secret that
+# every push to `main` decrypted, so the reviewer on the `production`
+# environment gated nothing: the preprod job carried the prod credential.
+# Now each deploy token lives only in its own GitHub environment, and the
+# environment's branch policy decides which refs can ever see it. The read-only
+# drift token is the only one left at repository level, and it cannot change
+# anything.
 #
-# It now rolls out to two of them -- `prod` on a tag, `preprod` on every push
-# to `main`. That is one ServiceAccount with a second Role and a second
-# RoleBinding, not a ClusterRole: a ClusterRole scoped to the same verbs would
-# have been shorter to write and would also have granted them in `monitoring`,
-# `forgejo`, `obsidian` and `kube-system`, where "patch any Deployment named
-# api or web" happens to match nothing today and is a promise about the future
-# nobody made. A RoleBinding can name a subject from another namespace, so
-# `preprod` binds the existing `prod/ci-rollout` account rather than minting a
-# second token for CI to hold.
+# WHAT `patch` ON A DEPLOYMENT ACTUALLY ALLOWS. Read this before assuming the
+# deploy tokens are narrow. RBAC grants verbs on objects, not on fields: there
+# is no way to say "patch the image and nothing else". So `patch` on
+# `deployments/web` lets whoever holds the token rewrite that Deployment's
+# whole pod template -- the command, the env (including `envFrom` any Secret
+# in the namespace, which the pod then holds even though the token cannot
+# read Secrets), `serviceAccountName` (any account in the namespace), and,
+# unless admission refuses it, `privileged`, `hostPath: /` and `hostNetwork`.
+# The ReplicaSet controller creates the pod, so the token needs no pod or
+# Secret grant of its own. On a single-node cluster a privileged or hostPath
+# pod is root on the node, which is every namespace.
+#
+# So a deploy token is worth everything its namespace holds, and -- until Pod
+# Security admission refuses privileged pods there (#20) -- the node. Splitting
+# the tokens is what keeps a leaked *preprod* token, the one every merge to
+# `main` decrypts, from being a prod credential by construction. It does not
+# make either token safe to lose; #20 is the change that closes the escalation.
+# The `resourceNames` below keep the verbs off `couch`, `mail` and anything
+# added later, which is real, but they are not a field-level restriction.
+#
+# Namespaced on purpose: a Role rather than a ClusterRole, so none of these
+# tokens can see `monitoring`, `forgejo`, `obsidian` or `kube-system`. Each
+# environment's Role is written out in full rather than shared: whoever asks
+# "what can CI do in preprod" gets the answer from one object.
 #
 #   kubectl apply -f k8s/ci-rollout-rbac.yaml
 #
-# Then build the kubeconfig for it with `k8s/ci-kubeconfig.sh`.
+# Then build each kubeconfig with `k8s/ci-kubeconfig.sh <preprod|prod|drift>`.
+#
+# The pre-#16 objects -- `prod/ci-rollout`, its `ci-rollout-token`, and the
+# `ci-rollout` Role and RoleBinding in each namespace -- are no longer declared
+# here. Applying this file does not touch them, so the old KUBECONFIG_B64
+# keeps working until it is deleted; README.md "Retiring the shared token"
+# has the order and the commands.
+#
+# ---------------------------------------------------------------- preprod --
 apiVersion: v1
 kind: ServiceAccount
-metadata: {name: ci-rollout, namespace: prod}
+metadata: {name: ci-deploy, namespace: preprod}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: {name: ci-rollout, namespace: prod}
+metadata: {name: ci-deploy, namespace: preprod}
 rules:
-  # `get` to read the current state, `patch` for `set image`, and `watch`
-  # because `rollout status` waits on the Deployment rather than polling it.
+  # `get` to read the current state, `patch` for `set image` and the release
+  # annotations, `watch` because `rollout status` waits on the Deployment.
+  # `patch` is the whole pod template; see the header. `web` and `api` only:
+  # preprod also runs `couch` and `mail`, and CI ships neither.
   - apiGroups: ["apps"]
     resources: ["deployments"]
     resourceNames: ["web", "api"]
     verbs: ["get", "patch", "watch"]
-  # `rollout status` also lists the ReplicaSets behind the Deployment to work
-  # out whether the new one is ready. Read-only, and it cannot be restricted
-  # by name because their names carry a generated suffix.
+  # `rollout status` lists the ReplicaSets behind the Deployment to decide
+  # whether the new one is ready. Read-only; not restrictable by name because
+  # the names carry a generated suffix.
   - apiGroups: ["apps"]
     resources: ["replicasets"]
     verbs: ["get", "list", "watch"]
-  # Enough to say *why* a rollout is stuck — an ImagePullBackOff is the most
-  # likely failure here and it is invisible without this.
+  # Enough to say *why* a rollout is stuck (an ImagePullBackOff is invisible
+  # without it) and to read each pod's imageID for the digest check.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  # The post-rollout readiness check (portfolio_site #200) talks to the new
-  # pods directly through `kubectl port-forward`: the public URL only proves
-  # the proxy or the auth gate answered, not that the app is up or which commit
-  # it runs. `create` on the port-forward subresource and nothing else: no exec,
-  # no logs, no other namespace.
+  # The post-rollout readiness check (portfolio_site #200) asks the new build
+  # for /health/ready and its document from inside the cluster, past the
+  # forwardAuth gate, through the API server's service proxy (#24).
+  #
+  # This replaced `create` on pods/portforward, which RBAC cannot narrow by
+  # name in practice (pod names carry a generated suffix) and which therefore
+  # reached every pod in the namespace on every port: preprod's
+  # unauthenticated Mailpit UI and CouchDB included. A port-forward also lands
+  # on the pod's loopback, which the api trusts for ADMIN_API_TOKENS=tunnel.
+  #
+  # `get` on the `services/proxy` subresource of two named Services is
+  # narrower on every axis: GET only (POST through the proxy is `create`,
+  # which is not granted), only `api` port 5000 and `web` port 80, and the
+  # request reaches the pod from the API server rather than from loopback.
+  # The name is the proxy path's `<service>:<port>` segment exactly as the
+  # client sends it, which is why it reads `api:5000` and not `api`: the
+  # site's deploy.sh asks for precisely these two, and any other spelling
+  # (`api`, `http:api:5000`) is refused.
+  #
+  # Residual: any GET on web or api, unauthenticated by the gate. Prod serves
+  # those to the internet anyway; in preprod it is what the gate otherwise
+  # hides from a stranger, and the admin routes still require their own auth.
   - apiGroups: [""]
-    resources: ["pods/portforward"]
-    verbs: ["create"]
+    resources: ["services/proxy"]
+    resourceNames: ["api:5000", "web:80"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: {name: ci-rollout, namespace: prod}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-rollout}
+metadata: {name: ci-deploy, namespace: preprod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-deploy}
 subjects:
-  - {kind: ServiceAccount, name: ci-rollout, namespace: prod}
+  - {kind: ServiceAccount, name: ci-deploy, namespace: preprod}
 ---
-# The same two verbs on the same two names, in preprod. Duplicated rather than
-# shared because a Role cannot span namespaces, and the duplication is the
-# thing that keeps the grant readable: whoever asks "what can CI do in
-# preprod" gets the answer from one object instead of an intersection.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata: {name: ci-rollout, namespace: preprod}
-rules:
-  # `web` and `api` only. Preprod also runs `couch` and `mail`, and CI has no
-  # business patching either -- it ships images of the site, and those two are
-  # the namespace's furniture.
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    resourceNames: ["web", "api"]
-    verbs: ["get", "patch", "watch"]
-  - apiGroups: ["apps"]
-    resources: ["replicasets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  # The post-rollout readiness check (portfolio_site #200) talks to the new
-  # pods directly through `kubectl port-forward`: the public URL only proves
-  # the proxy or the auth gate answered, not that the app is up or which commit
-  # it runs. `create` on the port-forward subresource and nothing else: no exec,
-  # no logs, no other namespace.
-  - apiGroups: [""]
-    resources: ["pods/portforward"]
-    verbs: ["create"]
----
-# The subject is the account in `prod`. One token, two namespaces, so there is
-# still exactly one credential in GitHub's secret store to rotate or revoke.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata: {name: ci-rollout, namespace: preprod}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-rollout}
-subjects:
-  - {kind: ServiceAccount, name: ci-rollout, namespace: prod}
----
-# A token for it. Kubernetes 1.24 stopped minting these automatically, so the
-# Secret is declared explicitly; the control plane fills in the token.
-#
-# It does not expire, which is the trade for CI being able to use it without a
-# refresh flow. `kubectl -n prod delete secret ci-rollout-token` revokes it.
+# A non-expiring token, revoked by deleting this Secret. Kubernetes 1.24
+# stopped minting these automatically, so it is declared; the control plane
+# fills it in. `ci-kubeconfig.sh --duration` mints an expiring one instead.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ci-rollout-token
+  name: ci-deploy-token
+  namespace: preprod
+  annotations: {kubernetes.io/service-account.name: ci-deploy}
+type: kubernetes.io/service-account-token
+---
+# ------------------------------------------------------------------- prod --
+# The same grant, in prod, for a different account. Nothing binds it in
+# preprod, and nothing binds preprod's account here.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: ci-deploy, namespace: prod}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ci-deploy, namespace: prod}
+rules:
+  # As in preprod; `patch` is the whole pod template (see the header).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["web", "api"]
+    verbs: ["get", "patch", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # As in preprod: GET through the service proxy to two named ports, instead
+  # of a port-forward to any pod (#24).
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    resourceNames: ["api:5000", "web:80"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ci-deploy, namespace: prod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-deploy}
+subjects:
+  - {kind: ServiceAccount, name: ci-deploy, namespace: prod}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ci-deploy-token
   namespace: prod
-  annotations: {kubernetes.io/service-account.name: ci-rollout}
+  annotations: {kubernetes.io/service-account.name: ci-deploy}
+type: kubernetes.io/service-account-token
+---
+# ------------------------------------------------------------------ drift --
+# portfolio_site's Deploy drift workflow runs daily with nobody pushing, reads
+# which image `web` and `api` run in both namespaces, and changes nothing. It
+# does not run inside an environment (a reviewer on `production` would hold a
+# cron job forever), so its token is a repository secret -- which is
+# acceptable only because this account can `get` two Deployments and nothing
+# else. No `list`, no `watch`, no pods, no proxy.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: ci-drift, namespace: prod}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ci-drift, namespace: prod}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["web", "api"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ci-drift, namespace: prod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-drift}
+subjects:
+  - {kind: ServiceAccount, name: ci-drift, namespace: prod}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: ci-drift, namespace: preprod}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["web", "api"]
+    verbs: ["get"]
+---
+# A RoleBinding may name an account from another namespace; this one names
+# the reader, and only the reader.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: ci-drift, namespace: preprod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-drift}
+subjects:
+  - {kind: ServiceAccount, name: ci-drift, namespace: prod}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ci-drift-token
+  namespace: prod
+  annotations: {kubernetes.io/service-account.name: ci-drift}
 type: kubernetes.io/service-account-token

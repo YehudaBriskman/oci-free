@@ -202,26 +202,59 @@ needs to clone anything there.
 
 ### One-time setup
 
-Three secrets in the **site** repository, one in the cluster.
+Secrets in the **site** repository, one in the cluster.
 
 1. **`TS_OAUTH_CLIENT_ID`** / **`TS_OAUTH_SECRET`** — a Tailscale OAuth client
    with the `auth_keys` scope, plus an ACL grant letting `tag:ci` reach this
    node.
-2. **`KUBECONFIG_B64`** — two commands, and never the cluster-admin
-   kubeconfig. A rollout needs `get`/`patch`/`watch` on the `web` and `api`
-   Deployments and read on the Pods behind them, in `prod` and in `preprod`;
-   anything more is a credential that can do anything to this cluster, sitting
-   in a third party's secret storage.
+2. **A kubeconfig per job, never the cluster-admin one** (#16).
+   `k8s/ci-rollout-rbac.yaml` declares three accounts and
+   `k8s/ci-kubeconfig.sh` prints a kubeconfig for each:
+
+   | secret | where it lives in GitHub | account | can do |
+   |---|---|---|---|
+   | `KUBECONFIG_PREPROD` | `preprod` environment | `preprod/ci-deploy` | roll out `web`/`api` in `preprod` only |
+   | `KUBECONFIG_PROD` | `production` environment | `prod/ci-deploy` | roll out `web`/`api` in `prod` only |
+   | `KUBECONFIG_DRIFT` | repository | `prod/ci-drift` | `get` `web`/`api` in both; nothing else |
 
    ```sh
    kubectl apply -f k8s/ci-rollout-rbac.yaml   # once
-   ./k8s/ci-kubeconfig.sh                      # prints the value to paste
+   R=YehudaBriskman/portfolio_site
+   ./k8s/ci-kubeconfig.sh preprod | gh secret set KUBECONFIG_PREPROD -R "$R" --env preprod
+   ./k8s/ci-kubeconfig.sh prod    | gh secret set KUBECONFIG_PROD    -R "$R" --env production
+   ./k8s/ci-kubeconfig.sh drift   | gh secret set KUBECONFIG_DRIFT   -R "$R"
    ```
 
-   One token covers both namespaces: `preprod` binds the same ServiceAccount
-   with its own Role, rather than a ClusterRole that would have granted the
-   same verbs in `monitoring`, `forgejo` and `kube-system` too. Revoke any
-   time with `kubectl -n prod delete secret ci-rollout-token`.
+   **What a deploy token can actually do.** It is not "set image and nothing
+   else". RBAC grants verbs on objects, not fields, so `patch` on
+   `deployments/web` is a rewrite of the whole pod template: any command, any
+   Secret in the namespace through `envFrom`, any ServiceAccount in the
+   namespace, and — unless admission refuses it — `privileged`, `hostPath: /`
+   and `hostNetwork`. On one node that last group is root on the node. So a
+   deploy token is worth everything in its namespace, and until Pod Security
+   enforces `baseline` there (#20), the node. The split is what stops the
+   preprod token, which every merge to `main` decrypts, from also being the
+   prod token; #20 is what closes the escalation itself.
+
+   **An environment secret is only as gated as the environment's branch
+   policy.** Without one, any branch can declare `environment: production` and
+   read `KUBECONFIG_PROD`. So `production` admits only `v*` tags and `preprod`
+   only `main` (the commands are under "Retiring the shared token" below). A
+   required reviewer on `production` is optional on top.
+
+   The readiness check after a rollout reads `api:5000/health/ready` and
+   `web:80` through the API server's service proxy: `get` on
+   `services/proxy`, those two names only (#24). It used to be
+   `create` on `pods/portforward`, which reached every pod in the namespace —
+   Mailpit and CouchDB in preprod — and landed on the api's loopback, which
+   `ADMIN_API_TOKENS=tunnel` trusts. What remains is any GET on `web` or `api`
+   without passing preprod's gate; the admin routes keep their own auth.
+
+   Tokens: the default never expires and is revoked by deleting its
+   `*-token` Secret (`kubectl -n preprod delete secret ci-deploy-token`; apply
+   the file again to mint a new one, then re-run the matching line above).
+   `./k8s/ci-kubeconfig.sh prod --duration 2160h` mints an expiring token
+   instead, and re-running it before it lapses is the rotation.
 3. **`ghcr-pull`** in the cluster, because the packages are private:
 
    ```sh
@@ -236,11 +269,46 @@ Three secrets in the **site** repository, one in the cluster.
    isolation — unlike `portfolio-api-env`, which that script builds from
    scratch and never copies.
 
-A `production` environment in the site repository is where a required reviewer
-goes, if a human step before a live rollout is wanted. If the three secrets
-above are ever moved from repository secrets onto that environment, they must
-be added to the `preprod` environment too, or every merge fails with an empty
-kubeconfig.
+### Retiring the shared token
+
+Before #16, one account (`prod/ci-rollout`) was bound in both namespaces and
+its token was the repository secret `KUBECONFIG_B64`, readable by every job.
+`ci-rollout-rbac.yaml` no longer declares it, but applying the file does not
+delete it either, so the old secret keeps working until the last step. In
+this order — each step leaves both pipelines working:
+
+```sh
+R=YehudaBriskman/portfolio_site
+# 1. The new accounts, beside the old one.
+kubectl apply -f k8s/ci-rollout-rbac.yaml
+# 2. Both environments already exist (the deploy job created them), with no
+#    rules. Give each a branch policy so only its own refs can read its
+#    secrets. This PUT sets the whole protection config; add "reviewers"
+#    to production's JSON here if a human approval is wanted.
+gh api -X PUT "repos/$R/environments/preprod" --input - <<'JSON'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+JSON
+gh api -X POST "repos/$R/environments/preprod/deployment-branch-policies" -f name=main -f type=branch
+gh api -X PUT "repos/$R/environments/production" --input - <<'JSON'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+JSON
+gh api -X POST "repos/$R/environments/production/deployment-branch-policies" -f name='v*' -f type=tag
+# 3. The three secrets (step 2 of One-time setup above).
+# 4. Merge the site PR that reads them. Watch one preprod rollout, and the
+#    next release's prod rollout (or a Deploy drift run by hand), go green.
+# 5. Only then: the shared secret, and the account behind it.
+gh secret delete KUBECONFIG_B64 -R "$R"
+kubectl -n prod delete secret ci-rollout-token
+kubectl -n preprod delete rolebinding ci-rollout
+kubectl -n preprod delete role ci-rollout
+kubectl -n prod delete rolebinding ci-rollout
+kubectl -n prod delete role ci-rollout
+kubectl -n prod delete serviceaccount ci-rollout
+```
+
+Deleting the GitHub secret is not revocation — anything that ever read it
+still holds a working token — which is why the cluster side is deleted too.
+`kubectl get sa,role,rolebinding -A | rg ci-rollout` should then print nothing.
 
 `kubectl create secret --from-env-file` does **not** strip quotes the way `dotenv`
 does, so `CONTACT_TO="a@b.com"` arrives including the quote characters and fails
