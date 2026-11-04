@@ -175,6 +175,12 @@ spec:
             # would point preprod's frontend at the production API, which is
             # exactly the isolation note (3) in the header exists to keep.
             - {name: NGINX_API_HOST, value: api.preprod.svc.cluster.local}
+            # `on`, the image's default, stated so a change of default cannot
+            # break preprod's admin. Unlike prod, this host's single Ingress
+            # sends /api/ THROUGH nginx, after strip-identity, github-auth and
+            # inject-proxy-secret have run, so the identity headers reaching
+            # nginx are the gate's own and must be passed on (oci-free #22).
+            - {name: NGINX_FORWARD_IDENTITY, value: "on"}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
             limits:   {memory: 128Mi}

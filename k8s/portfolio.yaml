@@ -78,6 +78,14 @@ spec:
             # the name, and getting it wrong here points production's frontend
             # at preprod's API.
             - {name: NGINX_API_HOST, value: api.prod.svc.cluster.local}
+            # Drop X-Auth-Request-User, X-Auth-Request-Email and
+            # X-Admin-Proxy-Secret on the way to the API (oci-free #22). Safe
+            # here and only here: the admin host's /api goes straight to the
+            # api Service (k8s/admin-gate.template.yaml) and never passes this
+            # nginx, so nothing legitimate reaches it carrying them. Preprod
+            # must NOT set this: its admin gate runs in front of its nginx.
+            # An image from before the switch ignores the variable.
+            - {name: NGINX_FORWARD_IDENTITY, value: "off"}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
             limits:   {memory: 128Mi}
@@ -129,6 +137,26 @@ spec:
   selector: {app: api}
   ports: [{port: 5000, targetPort: 5000}]
 ---
+# Remove anything the CLIENT claims about its identity before the request goes
+# any further (oci-free #22). The public host has no auth step, so on this
+# Ingress nothing legitimate ever carries these three; the API's requireAdmin
+# would refuse them anyway, since a client never knows the proxy secret, but
+# that should not be the only thing saying no.
+#
+# Also the admin gate's first step: the admin Ingress
+# (k8s/admin-gate.template.yaml) names prod-strip-identity before github-auth.
+# It is declared here, in the file every install applies first, and the
+# template refers to it rather than declaring a second copy that could drift.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata: {name: strip-identity, namespace: prod}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Auth-Request-User: ""
+      X-Auth-Request-Email: ""
+      X-Admin-Proxy-Secret: ""
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -137,6 +165,8 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    # Namespaced, hence the `prod-` prefix; defined just above.
+    traefik.ingress.kubernetes.io/router.middlewares: prod-strip-identity@kubernetescrd
 spec:
   rules:
     - host: yehudabriskman.com
