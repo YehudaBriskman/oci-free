@@ -5,6 +5,7 @@
 #
 #   kubectl apply -f k8s/portfolio-preprod.yaml
 #   GITHUB_TOKEN=ghp_... ./k8s/preprod-secrets.sh
+#   ./k8s/preprod-admin-gate.sh         # the admin area's proof header
 #
 # GITHUB_TOKEN is the one value this script cannot invent, and it is optional:
 # without it everything comes up and the contribution city draws its empty
