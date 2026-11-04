@@ -385,11 +385,12 @@ be recreated by hand.
 
 ## Helm releases
 
-Three charts are installed with Helm, and until #25 no chart version was
-written down anywhere, so a rebuild would have installed whatever each chart
-was on the day. The versions below are the ones to install. **They are not
-filled in yet**: nothing in this repository could read them, so the owner
-records them from the live cluster:
+Until #25 no chart version was written down anywhere, so a rebuild would have
+installed whatever each chart was on the day. The versions below are the ones
+the cluster runs and the ones to install. CI renders each values file against
+exactly these versions (`tests/helm.sh`, which also pins each chart archive's
+sha256), so a values change that the installed chart cannot render fails the
+pull request. To re-read them from the live cluster:
 
 ```sh
 helm list -A -o json \
@@ -397,13 +398,19 @@ helm list -A -o json \
 helm repo list                   # the repository URL each chart came from
 ```
 
-and pastes the rows over the `TODO` ones. `chart` prints as `<chart>-<version>`.
+| Release | Namespace | Chart (name-version) | App version | Repository | Values |
+|---|---|---|---|---|---|
+| `kube-prometheus-stack` | `monitoring` | `kube-prometheus-stack-89.2.2` | v0.93.1 | `https://prometheus-community.github.io/helm-charts` | `k8s/monitoring-values.yaml` |
+| `forgejo` | `forgejo` | `forgejo-17.1.5` | 15.0.7 | `oci://code.forgejo.org/forgejo-helm/forgejo` | `k8s/forgejo-values.yaml` |
+| `couchdb` | `obsidian` | `couchdb-4.6.3` | 3.5.1 | `https://apache.github.io/couchdb-helm` | `k8s/couchdb-values.yaml` |
+| cert-manager | | v1.21.1 | v1.21.1 | | none |
 
-| Release | Namespace | Chart (name-version) | App version | Values |
-|---|---|---|---|---|
-| `kube-prometheus-stack` | `monitoring` | TODO | TODO | `k8s/monitoring-values.yaml` |
-| TODO | TODO | forgejo TODO | TODO | `k8s/forgejo-values.yaml` |
-| TODO | TODO | couchdb TODO | TODO | `k8s/couchdb-values.yaml` |
+The release names and namespaces follow from the Services the Ingresses in
+`k8s/` point at (`forgejo-http`, `couchdb-couchdb` in `obsidian`). cert-manager
+runs v1.21.1 with no values file in this repository, so CI has nothing of it
+to render (its chart is `cert-manager` v1.21.1 at `https://charts.jetstack.io`
+if it is reinstalled with Helm); its kinds (`Certificate`, `ClusterIssuer`)
+are schema-checked by `tests/manifests.sh`.
 
 Every install or upgrade names the version, so an upgrade is a decision and
 not a side effect of `helm repo update`:
@@ -416,6 +423,29 @@ helm upgrade --install <release> <repo>/<chart> -n <namespace> \
 Bump a version by changing the table in the same commit as the upgrade. Traefik
 is not in this table: k3s installs it from its own bundled HelmChart, so its
 version follows the k3s version.
+
+## CI and tests
+
+`.github/workflows/ci.yml` runs on every pull request and push to `main`. The
+repository is public (since 2026-11-04), so it also has GitHub secret scanning
+with push protection, Dependabot alerts, and a ruleset on `main`: no deletion,
+no force-push, changes through a pull request, `CI gate` required, owner
+bypass only. Read the `CI gate` check; it fails if any job failed, and passes
+over a job that was skipped only because the change did not touch its paths.
+
+| Job | What it holds | Run it locally |
+|---|---|---|
+| Secrets | no credential in the commits a PR or push adds (gitleaks, redacted); weekly full history in `secret-scan.yml` | `.github/scripts/secret-scan.sh install`, then `MODE=full` `scan` |
+| Shell | shellcheck over every script | `.github/scripts/tools.sh install shellcheck` |
+| Manifests | `k8s/*.yaml` schema-valid, strict, with pinned CRD schemas | `tests/manifests.sh` |
+| Helm | each values file renders at the version in the table above | `tests/helm.sh` |
+| OpenTofu | `fmt -check`, `validate` against the locked provider | `tofu init -backend=false && tofu validate` |
+| Telemetry e2e | the token gate, PII stripping, and `WindomTokenReuse` paging `email`, from the deployed configs in docker | `tests/telemetry-e2e.sh` |
+| Scripts | wrong-context guard, image migration, secrets kept off argv, with stub `kubectl` | `tests/scripts.sh` |
+
+Tools are pinned with checksums in `.github/scripts/tools.sh`; `install` puts
+them in `~/.cache/oci-free-tools/bin` off a runner. Helm, OpenTofu and the
+telemetry e2e run only when their files change (`.github/scripts/ci-classify.sh`).
 
 ## Host firewall guard (#18)
 

@@ -151,15 +151,20 @@ data:
             statements:
               - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
               - replace_pattern(attributes["url.full"], "\\?.*$", "")
+          # Span events and metric datapoints strip url.full's query string
+          # too: until tests/telemetry-e2e.sh, only logs and spans did, and an
+          # exception event or a url.full label kept `?token=...` intact.
           - context: spanevent
             statements:
               - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+              - replace_pattern(attributes["url.full"], "\\?.*$", "")
         metric_statements:
           - context: resource
             statements: *pii
           - context: datapoint
             statements:
               - delete_matching_keys(attributes, "^(client\\.address|client\\.port|http\\.client_ip|user\\.email|enduser\\..+|http\\.(request|response)\\.header\\..+|url\\.query)$")
+              - replace_pattern(attributes["url.full"], "\\?.*$", "")
       batch:
         timeout: 5s
 
