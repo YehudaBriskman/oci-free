@@ -426,7 +426,7 @@ data:
           "type": "prometheus",
           "uid": "prometheus"
          },
-         "expr": "node_load5{job=\"node-exporter\"} / count by (instance) (node_cpu_seconds_total{job=\"node-exporter\",mode=\"idle\"})",
+         "expr": "sum by (instance) (node_load5{job=\"node-exporter\"}) / count by (instance) (node_cpu_seconds_total{job=\"node-exporter\",mode=\"idle\"})",
          "legendFormat": "{{instance}}"
         }
        ],
