@@ -1,0 +1,300 @@
+# Pod logs of the portfolio namespaces (prod, preprod) into Loki (#61).
+#
+#   kube-apiserver --pods/log--> alloy --> loki:3100/loki/api/v1/push  (14d)
+#                                      <-- Prometheus scrapes alloy:12345
+#
+# Why this shape:
+#  - loki.source.kubernetes tails logs THROUGH THE KUBERNETES API, so there is
+#    no hostPath, no DaemonSet and no privileged container. The observability
+#    namespace enforces Pod Security `restricted` (observability.yaml) and
+#    Alloy runs inside it unchanged. The cluster is one node, so a single
+#    replica sees every pod.
+#  - Read access is a namespaced Role in prod and in preprod, not a ClusterRole:
+#    pods get/list/watch and pods/log get. No Secrets, no ConfigMaps, no other
+#    namespace, no write verb. Adding a namespace is a new Role + RoleBinding
+#    plus its name in the config below (docs/monitoring.md, "Logs").
+#  - Native Loki push (/loki/api/v1/push), not OTLP: the labels below arrive as
+#    index labels exactly as written. OTLP would turn them into resource
+#    attributes that Loki maps by its own rules. The OTLP path stays WindoM's.
+#  - Privacy: the pipeline drops probe noise and masks emails, Authorization and
+#    Bearer values, cookies, JWTs and token/key/secret/password values BEFORE a
+#    line leaves the pod, and only namespace, app, pod and container become
+#    labels (stage.label_keep enforces that, whatever discovery returns). It is
+#    a second defence behind the apps' own logging discipline, not a licence
+#    to log personal data.
+#  - Positions are kept in an emptyDir: an Alloy container restart resumes, a
+#    pod re-creation resumes from "now". A short gap beats a PVC for logs.
+#  - The pod mounts its ServiceAccount token (it must talk to the API) and has
+#    nothing else: the token's only rights are the two Roles below.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: alloy, namespace: observability}
+automountServiceAccountToken: false   # the Deployment opts in explicitly
+---
+# ------------------------------------------------------------------- RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: alloy-logs, namespace: prod}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: alloy-logs, namespace: prod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: alloy-logs}
+subjects:
+  - {kind: ServiceAccount, name: alloy, namespace: observability}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: alloy-logs, namespace: preprod}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: alloy-logs, namespace: preprod}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: alloy-logs}
+subjects:
+  - {kind: ServiceAccount, name: alloy, namespace: observability}
+---
+# ----------------------------------------------------------- NetworkPolicy
+# observability is default-deny both ways (observability.yaml); DNS is allowed
+# there for every pod. These add the three flows Alloy has.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: alloy, namespace: observability}
+spec:
+  podSelector: {matchLabels: {app: alloy}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Prometheus scrapes Alloy's own /metrics.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 12345}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: loki}}}]
+      ports: [{protocol: TCP, port: 3100}]
+    # The Kubernetes API. The `kubernetes` Service (10.43.0.1:443) is DNAT'd to
+    # the node's own address on 6443 before the policy sees the packet, and
+    # this repo has no other client of it to copy (kube-state-metrics and the
+    # operator live in a namespace without default-deny). Port 6443 only, and
+    # private ranges only: never the internet, never the metadata service.
+    # Narrow it to the node's /32 if you want it tighter.
+    - to:
+        - ipBlock: {cidr: 10.0.0.0/8}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports: [{protocol: TCP, port: 6443}]
+---
+# Loki accepts pushes from the collector only; this adds Alloy next to it.
+# NetworkPolicies are additive, so observability.yaml's `loki` policy is untouched.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: loki-from-alloy, namespace: observability}
+spec:
+  podSelector: {matchLabels: {app: loki}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: alloy}}}]
+      ports: [{protocol: TCP, port: 3100}]
+---
+# ------------------------------------------------------------------ Config
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: alloy, namespace: observability}
+data:
+  config.alloy: |
+    // Discovery: pods of the two namespaces only. `names` limits what the API
+    // is asked for (and what the Roles allow); the `keep` rule below is the
+    // same list again, so a mistake in one is not the end of the scoping.
+    discovery.kubernetes "pods" {
+      role = "pod"
+      namespaces {
+        own_namespace = false
+        names         = ["prod", "preprod"]
+      }
+    }
+
+    discovery.relabel "pods" {
+      targets = discovery.kubernetes.pods.output
+
+      rule {
+        action        = "keep"
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "prod|preprod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      // app = the pod's `app` label, else the container name.
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+      rule {
+        source_labels = ["app", "__meta_kubernetes_pod_container_name"]
+        regex         = ";(.+)"
+        target_label  = "app"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.process.pods.receiver]
+    }
+
+    loki.process "pods" {
+      forward_to = [loki.write.loki.receiver]
+
+      // 1. Probe and scrape noise: kubelet probes, /health, /health/ready,
+      //    /metrics, in access-log text or JSON form. Keeps volume small.
+      stage.drop {
+        expression = `(?i)kube-probe|"?(GET|HEAD)"? "?/(health(/ready)?|metrics)([ ?"]|$)|"(url|path)":\s*"/(health(/ready)?|metrics)([?"])`
+      }
+
+      // 2. Redaction. stage.replace rewrites only the capture group.
+      //    Email addresses.
+      stage.replace {
+        expression = `([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})`
+        replace    = "[email]"
+      }
+      //    Authorization header, as `Authorization: Bearer x`, `authorization=x`
+      //    or JSON `"authorization":"Basic x"`.
+      stage.replace {
+        expression = `(?i)authorization["']?\s*[:=]\s*["']?(?:bearer\s+|basic\s+)?([^\s"',;]+)`
+        replace    = "[redacted]"
+      }
+      //    A Bearer token anywhere else.
+      stage.replace {
+        expression = `(?i)bearer\s+([A-Za-z0-9._~+/=\-]{8,})`
+        replace    = "[redacted]"
+      }
+      //    Cookie and Set-Cookie values, to the end of the value.
+      stage.replace {
+        expression = `(?i)cookie["']?\s*[:=]\s*["']?([^"'\n]+)`
+        replace    = "[redacted]"
+      }
+      //    JSON web tokens.
+      stage.replace {
+        expression = `(eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*)`
+        replace    = "[redacted]"
+      }
+      //    token= / key= / secret= / password= values (query strings, key=value
+      //    logs): access_token, api_key, x-api-key, client_secret, ...
+      stage.replace {
+        expression = `(?i)\b[a-z_\-]*(?:token|key|secret|passw(?:or)?d|sig(?:nature)?)=([^&\s"']+)`
+        replace    = "[redacted]"
+      }
+
+      // 3. Only these four become Loki labels; anything else discovery or the
+      //    source attached (instance, job, filename, pod IP...) is dropped.
+      stage.label_keep {
+        values = ["namespace", "app", "pod", "container"]
+      }
+    }
+
+    loki.write "loki" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+      }
+    }
+---
+# -------------------------------------------------------------- Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: alloy, namespace: observability}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # two Alloys on one pod would ship every line twice
+  selector: {matchLabels: {app: alloy}}
+  template:
+    metadata:
+      labels: {app: alloy}
+    spec:
+      serviceAccountName: alloy
+      automountServiceAccountToken: true   # needed to reach the API
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: alloy
+          # v1.22.0 multi-arch index (the node is arm64).
+          image: grafana/alloy:v1.22.0@sha256:9acc2529bc1edb7f5b2bd801dd8334ebc80c158e3a9e5526ecd7c9a273d43189
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --disable-reporting
+          env:
+            - name: GOMEMLIMIT
+              value: 200MiB
+          ports:
+            - {name: http-metrics, containerPort: 12345}
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            initialDelaySeconds: 30
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits:   {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/alloy}
+            - {name: data, mountPath: /var/lib/alloy}
+      volumes:
+        - name: config
+          configMap: {name: alloy}
+        - name: data
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: observability
+  labels: {app: alloy}
+spec:
+  selector: {app: alloy}
+  ports:
+    - {name: http-metrics, port: 12345, targetPort: 12345}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: alloy
+  namespace: observability
+  labels: {release: kube-prometheus-stack}
+spec:
+  selector: {matchLabels: {app: alloy}}
+  endpoints:
+    - port: http-metrics
+      interval: 30s

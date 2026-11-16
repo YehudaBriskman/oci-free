@@ -35,6 +35,7 @@ that field, so applying a manifest never reverts a deployed release.
 |---|---|
 | `forgejo-values.yaml`, `forgejo-runner.yaml` | a self-hosted Forgejo git server and its Actions runner (Helm) |
 | `monitoring-values.yaml`, `grafana-netpol.yaml` | kube-prometheus-stack: Prometheus, Alertmanager and Grafana, with Grafana behind the sign-on proxy |
+| `alloy.yaml`, `logs-dashboard.yaml` | Grafana Alloy shipping prod/preprod pod logs to Loki (namespaced read-only RBAC, redaction, NetworkPolicies) and its Grafana dashboard |
 | `observability.yaml` | an OpenTelemetry collector, Loki and Tempo for an external app's telemetry: token-gated ingest, PII attributes deleted, default-deny network policies, Pod Security `restricted` |
 | `alertmanager.yaml.tmpl`, `windom-alerts.yaml`, `windom-dashboard.yaml` | alert routing, alert rules and a dashboard for that telemetry |
 | `portfolio-alerts.yaml`, `blackbox.yaml`, `portfolio-scrapes.yaml`, `portfolio-dashboard.yaml`, `node-dashboard.yaml` | host, container, stack and uptime alert rules, the Blackbox exporter and its probes, the Traefik and cert-manager scrapes, two Grafana dashboards ([Monitoring](monitoring.md)) |

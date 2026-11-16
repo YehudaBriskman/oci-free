@@ -438,3 +438,36 @@ spec:
           annotations:
             summary: "TLS certificate served by {{ $labels.instance }} expires in under 3 days"
             description: "The certificate a visitor is actually served for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
+---
+# Log shipping (#61, k8s/alloy.yaml). Needs the `alloy` ServiceMonitor.
+# "No lines from the prod API for 30m while it is Ready" is deliberately NOT
+# an alert: Alloy exposes only totals (loki_write_sent_entries_total has no
+# namespace or app label), the probe lines are dropped before counting, and a
+# quiet site is legitimately silent, so it would be noise. Alloy being up and
+# not dropping is what these two rules can prove.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-logs
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    - name: portfolio-logs
+      rules:
+        - alert: AlloyDown
+          expr: |
+            up{job="alloy",namespace="observability"} == 0
+            or absent(up{job="alloy",namespace="observability"})
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Log shipper Alloy is down or not scraped"
+            description: "Alloy (observability) has not answered Prometheus for 10 minutes, so prod and preprod pod logs are not reaching Loki. Check `kubectl -n observability get pods -l app=alloy` and its logs."
+        - alert: AlloyDroppingLogs
+          expr: sum(rate(loki_write_dropped_entries_total{job="alloy"}[10m])) > 0
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Alloy is dropping log lines before Loki"
+            description: "Alloy has been dropping log entries for 10 minutes (Loki down, rate-limited or rejecting them). Look at the Loki pod and Alloy's logs; the ingestion limit is 4 MB/s."

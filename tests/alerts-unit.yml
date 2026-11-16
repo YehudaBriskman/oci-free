@@ -6,6 +6,7 @@ rule_files:
   - rules-portfolio-containers.yml
   - rules-portfolio-stack.yml
   - rules-portfolio-probes.yml
+  - rules-portfolio-logs.yml
 evaluation_interval: 1m
 tests:
   # Memory at 95% of the node for 10 minutes: warning (>70, 15m) not yet,
@@ -55,3 +56,19 @@ tests:
             exp_annotations:
               summary: "prod/api-1 (api) memory above 70% of its limit"
               description: "Working set is 80% of the container's memory limit for 15 minutes."
+  # Alloy stops answering at minute 2: quiet at 5m (under the 10m `for`), firing at 13m.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="alloy",namespace="observability",instance="a"}'
+        values: '1 1 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AlloyDown
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: AlloyDown
+        exp_alerts:
+          - exp_labels: {team: portfolio, severity: warning, job: alloy, namespace: observability, instance: a}
+            exp_annotations:
+              summary: "Log shipper Alloy is down or not scraped"
+              description: "Alloy (observability) has not answered Prometheus for 10 minutes, so prod and preprod pod logs are not reaching Loki. Check `kubectl -n observability get pods -l app=alloy` and its logs."

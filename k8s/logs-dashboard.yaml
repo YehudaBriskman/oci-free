@@ -1,0 +1,219 @@
+# The portfolio logs dashboard (#61). Grafana's sidecar loads any ConfigMap
+# labelled grafana_dashboard=1. Edit the JSON here, not in the UI. Source of
+# the data: k8s/alloy.yaml (labels namespace, app, pod, container only;
+# detected_level is structured metadata that Loki derives itself).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portfolio-logs-dashboard
+  namespace: monitoring
+  labels: {grafana_dashboard: "1"}
+data:
+  portfolio-logs.json: |
+    {
+     "uid": "portfolio-logs",
+     "title": "Portfolio: logs",
+     "tags": [
+      "portfolio",
+      "logs"
+     ],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "refresh": "1m",
+     "editable": false,
+     "time": {
+      "from": "now-6h",
+      "to": "now"
+     },
+     "templating": {
+      "list": [
+       {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+         "type": "loki",
+         "uid": "loki"
+        },
+        "query": {
+         "query": "label_values(namespace)",
+         "refId": "v",
+         "qryType": 1
+        },
+        "definition": "label_values(namespace)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+         "text": "All",
+         "value": "$__all"
+        },
+        "sort": 1
+       },
+       {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+         "type": "loki",
+         "uid": "loki"
+        },
+        "query": {
+         "query": "label_values({namespace=~\"$namespace\"}, app)",
+         "refId": "v",
+         "qryType": 1
+        },
+        "definition": "label_values({namespace=~\"$namespace\"}, app)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {
+         "text": "All",
+         "value": "$__all"
+        },
+        "sort": 1
+       }
+      ]
+     },
+     "panels": [
+      {
+       "id": 1,
+       "type": "timeseries",
+       "title": "Log volume by level",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "sum by (detected_level) (count_over_time({namespace=~\"$namespace\", app=~\"$app\"} [$__auto]))",
+         "legendFormat": "{{detected_level}}"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "custom": {
+          "drawStyle": "bars",
+          "stacking": {
+           "mode": "normal"
+          },
+          "fillOpacity": 60
+         }
+        },
+        "overrides": []
+       }
+      },
+      {
+       "id": 2,
+       "type": "timeseries",
+       "title": "Errors per app",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "sum by (app) (count_over_time({namespace=~\"$namespace\", app=~\"$app\"} | detected_level=~\"(?i)error|fatal|critical\" [$__auto]))",
+         "legendFormat": "{{app}}"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "custom": {
+          "drawStyle": "bars",
+          "fillOpacity": 60
+         }
+        },
+        "overrides": []
+       }
+      },
+      {
+       "id": 3,
+       "type": "logs",
+       "title": "Errors",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 9
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "{namespace=~\"$namespace\", app=~\"$app\"} | detected_level=~\"(?i)error|fatal|critical\"",
+         "legendFormat": ""
+        }
+       ],
+       "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+       }
+      },
+      {
+       "id": 4,
+       "type": "logs",
+       "title": "Live logs",
+       "datasource": {
+        "type": "loki",
+        "uid": "loki"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 24,
+        "h": 12
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "loki",
+          "uid": "loki"
+         },
+         "expr": "{namespace=~\"$namespace\", app=~\"$app\"}",
+         "legendFormat": ""
+        }
+       ],
+       "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+       }
+      }
+     ]
+    }

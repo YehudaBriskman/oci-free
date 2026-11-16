@@ -188,3 +188,59 @@ Nothing here needs a real outage.
    ```
 3. **Check the routing offline**, no cluster: `tests/alerts.sh` runs
    `amtool config routes test` for each case.
+
+## Logs
+
+Pod logs of the namespaces `prod` and `preprod` (portfolio `api`, `web`, `couch`,
+`mail`) are shipped to the existing Loki by **Grafana Alloy** (`k8s/alloy.yaml`)
+and shown in Grafana (dashboard **Portfolio: logs**, uid `portfolio-logs`,
+`k8s/logs-dashboard.yaml`). Loki keeps them **14 days** (`retention_period: 336h`,
+enforced by its compactor; `observability.yaml`), ingestion limit 4 MB/s, 8 MB
+burst. A handful of low-traffic pods is orders of magnitude under that, and the
+probe lines are dropped.
+
+**How.** One Alloy replica (the cluster is one node) in `observability`, Pod
+Security `restricted`. It tails logs through the Kubernetes API
+(`loki.source.kubernetes`): no hostPath, no DaemonSet, no privileged container. Its
+ServiceAccount can only `get/list/watch` `pods` and `get` `pods/log`, through a
+Role in `prod` and one in `preprod` (no Secrets, no ConfigMaps, no other
+namespace, no ClusterRole). It pushes to `loki:3100/loki/api/v1/push` (Loki's native
+API, so the labels below stay plain index labels; OTLP stays WindoM's path).
+NetworkPolicies keep default-deny: Alloy may reach Loki, DNS and the API server
+(6443, private ranges), Loki accepts it, and Prometheus may scrape its `:12345`.
+
+**Labels** (only these; `stage.label_keep` drops everything else): `namespace`,
+`app` (the pod's `app` label, else the container name), `pod`, `container`.
+Never a pod IP, request path or anything from a log line. The level is not a
+label: Loki derives `detected_level` as structured metadata.
+
+**Redaction** (second defence, before a line leaves the pod): masked as
+`[email]` / `[redacted]` are email addresses, `Authorization` and `Bearer`
+values, `Cookie`/`Set-Cookie` values, JWTs, and `token=`, `key=`, `secret=`,
+`password=`, `sig=` values (so `api_key=abc&page=2` becomes `api_key=[redacted]&page=2`).
+Dropped entirely: kube-probe requests and `/health`, `/health/ready`, `/metrics`
+lines. `tests/alerts.sh` runs these patterns over sample lines.
+
+**Privacy rules.** The apps must still not log personal data: this layer is a
+net, not permission. Do not add a label from a log field; do not widen the
+Roles; read logs only through Grafana (behind the SSO). 14 days is the ceiling,
+see the privacy policy before raising it.
+
+**Query it** (Grafana > Explore > Loki):
+
+```logql
+{namespace="preprod"}                                   # everything in preprod
+{namespace="prod", app="api"} |= "error"                # prod API lines containing error
+{namespace="prod", app="api"} | detected_level="error"  # by derived level
+sum by (app) (count_over_time({namespace=~"prod|preprod"} [5m]))   # volume per app
+{namespace="preprod", app="mail"} != "SMTP"             # exclude a noisy phrase
+```
+
+**Alerts** (`AlloyDown`, 10m; `AlloyDroppingLogs`, 10m; both warning). No "prod API
+silent for 30m" alert: Alloy's counters have no namespace or app label and a quiet
+site is legitimately silent.
+
+**Add a namespace.** In `k8s/alloy.yaml` add a Role + RoleBinding in it (copy
+`alloy-logs`), and its name to `names = [...]` and the `keep` regex in the
+config; extend the namespace list in the test in `tests/alerts.sh`; apply.
+Alloy rolls on a config change only if you `rollout restart` it.
