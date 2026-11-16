@@ -51,7 +51,14 @@ spec:
     - name: otel-collector
       rules:
         - alert: OtelCollectorRejecting
-          expr: sum(increase({__name__=~"otelcol_(receiver_refused|exporter_send_failed|processor_refused|processor_dropped)_.+", job="otel-collector"}[15m])) > 0
+          # Not increase(): it drops the metric name, and two of these counters
+          # with the same labels then collide ("vector cannot contain metrics
+          # with the same labelset"), which fails the whole rule group.
+          expr: |
+            (
+              sum({__name__=~"otelcol_(receiver_refused|exporter_send_failed|processor_refused|processor_dropped)_.+", job="otel-collector"})
+              - (sum({__name__=~"otelcol_(receiver_refused|exporter_send_failed|processor_refused|processor_dropped)_.+", job="otel-collector"} offset 15m) or vector(0))
+            ) > 0
           labels: {team: windom, severity: warning}
           annotations:
             summary: "The OTLP collector refused or dropped telemetry in the last 15 minutes"
