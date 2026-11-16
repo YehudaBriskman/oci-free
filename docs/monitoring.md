@@ -10,9 +10,14 @@ checks all of it offline, in CI.
 ## Where emails go
 
 Alertmanager sends every `team=portfolio` (and `team=windom`) alert through the
-one `email` receiver, to the address the template is rendered with (the site's
-`SMTP_USER`, filled in by `k8s/telemetry-secrets.sh`; it is not in this
-repository). The Gmail app password stays in the `alertmanager-smtp` Secret.
+one `email` receiver (the WindoM alerts share it). It sends through the same
+Resend SMTP account prod uses: host, port, user and sender are read by
+`k8s/telemetry-secrets.sh` from `prod/portfolio-api-env` (`SMTP_HOST`,
+`SMTP_PORT`, `SMTP_USER`, `MAIL_FROM`), the recipient is `$ALERT_TO` or else
+`CONTACT_TO`; none of them is in this repository. The password (`SMTP_PASS`)
+is copied into the `alertmanager-smtp` Secret. Port 465 is implicit TLS and
+Alertmanager handles that itself. The Gmail app password is retired: Gmail
+rejected it with 535.
 
 | Severity | First email | Updates | Repeat while firing | Resolved email |
 |---|---|---|---|---|
@@ -101,7 +106,7 @@ or queue alerts; that is a follow-up in that repository.
 | containers | `container_*`, `kube_*`, `kubelet_volume_stats_*` | chart default |
 | probes | `probe_*` | `k8s/blackbox.yaml` (new) |
 | Traefik | `traefik_service_*` | PodMonitor in `k8s/portfolio-scrapes.yaml` (new) |
-| certificates | `certmanager_certificate_*` | ServiceMonitor in `k8s/portfolio-scrapes.yaml` (new) |
+| certificates | `certmanager_certificate_*` | PodMonitor in `k8s/portfolio-scrapes.yaml` (new; controller pod port `http-metrics`, 9402) |
 
 A rule on a series that does not exist stays silent. After applying, open
 Prometheus **Status > Targets** (or run the queries in Grafana Explore) and
@@ -146,7 +151,7 @@ the `.tmpl` directly.
 Nothing here needs a real outage.
 
 1. **Send a synthetic alert** straight to Alertmanager, from the node (this
-   exercises routing and Gmail, not the rules):
+   exercises routing and the SMTP account, not the rules):
 
    ```sh
    kubectl -n monitoring exec sts/alertmanager-kube-prometheus-stack-alertmanager -c alertmanager -- \

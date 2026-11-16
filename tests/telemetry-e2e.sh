@@ -24,7 +24,7 @@
 #     Loki's alertmanager_url is used unchanged.
 #   - The Loki rule group's `interval: 1m` becomes 10s, so the alert fires in
 #     seconds rather than a minute. The expressions are untouched.
-#   - smtp.gmail.com resolves to 127.0.0.1 inside Alertmanager, so the email
+#   - the SMTP host (a dummy name) resolves to 127.0.0.1 inside Alertmanager, so the email
 #     receiver is routed to but nothing leaves the machine.
 #   - The ingest token is random per run and the SMTP password a placeholder.
 set -Eeuo pipefail
@@ -108,7 +108,10 @@ if n != 1:
 write("rules/fake/windom.yaml", re.sub(r"(?m)^(\s*)interval: 1m$", r"\1interval: 10s", rules))
 
 with open(os.path.join(k8s, "alertmanager.yaml.tmpl")) as f:
-    am = f.read().replace("__SMTP_USER__", "alerts@example.invalid")
+    am = f.read()
+    for k, v in (("HOST", "smtp.example.invalid"), ("PORT", "465"), ("USER", "resend"), ("FROM", "alerts@example.invalid")):
+        am = am.replace("__SMTP_%s__" % k, v)
+    am = am.replace("__ALERT_TO__", "ops@example.invalid")
 write("alertmanager/alertmanager.yml", am)
 write("alertmanager/smtp/password", "placeholder-not-a-secret")
 PY
@@ -124,7 +127,7 @@ docker network create "$NET" >/dev/null
 # read-only root filesystem, writable only where a volume is mounted.
 docker run -d --name "$RUN-alertmanager" --network "$NET" \
   --network-alias kube-prometheus-stack-alertmanager.monitoring.svc \
-  --add-host smtp.gmail.com:127.0.0.1 \
+  --add-host smtp.example.invalid:127.0.0.1 \
   --read-only --tmpfs /alertmanager:uid=65534,gid=65534 \
   -v "$work/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" \
   -v "$work/alertmanager/smtp:/etc/alertmanager/secrets/alertmanager-smtp:ro" \

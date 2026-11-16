@@ -9,7 +9,7 @@
 #      `promtool test rules` (tests/alerts-unit.yml) proves a few of them fire.
 #   3. Every Grafana dashboard ConfigMap holds valid JSON with a stable, unique
 #      uid and unique panel ids.
-#   4. alertmanager.yaml.tmpl, rendered with a placeholder address, passes
+#   4. alertmanager.yaml.tmpl, rendered with dummy SMTP values (port 465), passes
 #      `amtool check-config`, and the routes do what docs/monitoring.md says
 #      (`amtool config routes test`): portfolio critical/warning and windom go
 #      to `email`, Watchdog and anything else to `null`.
@@ -127,7 +127,9 @@ run_tool promtool check rules "${names[@]}"
 cp tests/alerts-unit.yml "$work/alerts-unit.yml"
 run_tool promtool test rules alerts-unit.yml
 
-sed 's/__SMTP_USER__/ops@example.invalid/g' k8s/alertmanager.yaml.tmpl >"$work/alertmanager.yml"
+sed -e 's/__SMTP_HOST__/smtp.example.invalid/g' -e 's/__SMTP_PORT__/465/g' \
+    -e 's/__SMTP_USER__/resend/g' -e 's/__SMTP_FROM__/alerts@example.invalid/g' \
+    -e 's/__ALERT_TO__/ops@example.invalid/g' k8s/alertmanager.yaml.tmpl >"$work/alertmanager.yml"
 run_tool amtool check-config alertmanager.yml
 
 fail=0

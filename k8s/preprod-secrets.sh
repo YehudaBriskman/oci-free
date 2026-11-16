@@ -29,7 +29,7 @@
 #
 #   portfolio-api-env   The other sixteen keys the API's Zod schema wants.
 #                       Deliberately NOT `kubectl get secret -n prod -o yaml |
-#                       sed s/prod/preprod/`: that secret holds a Gmail app
+#                       sed s/prod/preprod/`: that secret holds an SMTP
 #                       password and a CONTACT_TO that is a real mailbox, and
 #                       copying it is how a test submission on an unreleased
 #                       build ends up in the owner's inbox -- or how a bug in

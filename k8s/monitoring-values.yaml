@@ -31,7 +31,7 @@ alertmanager:
     # helm upgrade, or Alertmanager has no config to load.
     useExistingSecret: true
     configSecret: alertmanager-config
-    # The Gmail app password, mounted at
+    # The SMTP password (Resend), mounted at
     # /etc/alertmanager/secrets/alertmanager-smtp/password, read via
     # smtp_auth_password_file. Never in values or in the config.
     secrets: [alertmanager-smtp]
