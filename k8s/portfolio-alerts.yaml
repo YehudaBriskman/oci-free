@@ -323,7 +323,7 @@ spec:
             summary: "Traefik service {{ $labels.service }}: p95 {{ $value | printf \"%.1f\" }}s"
             description: "p95 request latency for {{ $labels.service }} has been above 2s for 10 minutes."
 
-        # Certificates. The cert-manager series need the ServiceMonitor in
+        # Certificates. The cert-manager series need the PodMonitor in
         # portfolio-scrapes.yaml; PortfolioProbeCertExpiring (blackbox) checks
         # the certificate the visitor is actually served, independently.
         - alert: CertificateExpiringSoon

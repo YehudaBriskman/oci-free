@@ -19,10 +19,13 @@ spec:
     - port: metrics
       interval: 30s
 ---
-# cert-manager's controller (Service `cert-manager`, port tcp-prometheus-handler
-# 9402 in the upstream chart): certificate expiry and readiness.
+# cert-manager's controller: certificate expiry and readiness. The metrics are
+# on by default, on container port 9402 named `http-metrics` in the upstream
+# chart. A PodMonitor does not depend on the Service's port name (the Service's
+# is `tcp-prometheus-servicemonitor`; the old ServiceMonitor here named a port
+# that does not exist, so 0 series, #56).
 apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+kind: PodMonitor
 metadata:
   name: cert-manager
   namespace: cert-manager
@@ -31,6 +34,6 @@ spec:
   selector:
     matchLabels: {app.kubernetes.io/name: cert-manager, app.kubernetes.io/component: controller}
   namespaceSelector: {matchNames: [cert-manager]}
-  endpoints:
-    - port: tcp-prometheus-handler
+  podMetricsEndpoints:
+    - port: http-metrics
       interval: 60s

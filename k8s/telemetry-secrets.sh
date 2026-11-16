@@ -4,11 +4,14 @@
 # disk, in argv or printed:
 #
 #   observability/otel-ingest-token   the bearer token Fly sends (openssl rand)
-#   monitoring/alertmanager-smtp      Gmail app password, copied from prod's
+#   monitoring/alertmanager-smtp      SMTP password (Resend), copied from prod's
 #                                     portfolio-api-env (the site already mails
 #                                     with it), mounted as a file by Alertmanager
-#   monitoring/alertmanager-config    alertmanager.yaml.tmpl with the address
-#                                     filled in (the address is not secret)
+#   monitoring/alertmanager-config    alertmanager.yaml.tmpl with host, port,
+#                                     user, sender and recipient filled in
+#                                     (none of them is secret). Recipient:
+#                                     $ALERT_TO, else CONTACT_TO from the same
+#                                     Secret.
 #
 #   ./k8s/telemetry-secrets.sh                 # run where kubectl reaches the OCI k3s
 #   ./k8s/telemetry-secrets.sh --rotate-token  # new ingest token, then re-run
@@ -52,20 +55,31 @@ else
   echo "  observability/otel-ingest-token exists, kept (use --rotate-token to replace)"
 fi
 
-# 2. SMTP. The site's own Gmail credentials, read and re-written inside the
-#    cluster. Strip quotes and spaces: --from-env-file keeps them (README).
+# 2. SMTP. The site's own mail credentials (Resend), read and re-written inside
+#    the cluster. Strip quotes and spaces: --from-env-file keeps them (README).
+#    Values are never printed, only the name of what is missing.
 field() {
   kubectl -n prod get secret portfolio-api-env -o jsonpath="{.data.$1}" | base64 -d | tr -d '"'"'"'[:space:]'
 }
-user=$(field SMTP_USER)
-case "$user" in
-  *@*) ;;
-  *) echo "refusing: prod portfolio-api-env has no usable SMTP_USER" >&2; exit 1 ;;
-esac
-if [ "$(field SMTP_PASS | wc -c)" -lt 8 ]; then
-  echo "refusing: prod portfolio-api-env has no SMTP_PASS" >&2; exit 1
+addr() {  # `Name <addr>` (spaces already stripped: Name<addr>) -> addr
+  sed -E 's/^.*<([^>]*)>.*$/\1/'
+}
+missing=""
+host=$(field SMTP_HOST); port=$(field SMTP_PORT); user=$(field SMTP_USER)
+from=$(field MAIL_FROM | addr)
+to=${ALERT_TO:-$(field CONTACT_TO | addr)}
+[ -n "$host" ] || missing="$missing SMTP_HOST"
+case "$port" in ''|*[!0-9]*) missing="$missing SMTP_PORT" ;; esac
+[ -n "$user" ] || missing="$missing SMTP_USER"
+case "$from" in *@*) ;; *) missing="$missing MAIL_FROM" ;; esac
+case "$to" in *@*) ;; *) missing="$missing ALERT_TO/CONTACT_TO" ;; esac
+[ "$(field SMTP_PASS | wc -c)" -ge 8 ] || missing="$missing SMTP_PASS"
+if [ -n "$missing" ]; then
+  echo "refusing: prod portfolio-api-env is missing or has unusable:$missing" >&2; exit 1
 fi
 field SMTP_PASS | put monitoring alertmanager-smtp password
-sed "s/__SMTP_USER__/$user/g" "$HERE/alertmanager.yaml.tmpl" | put monitoring alertmanager-config alertmanager.yaml
+sed -e "s|__SMTP_HOST__|$host|g" -e "s|__SMTP_PORT__|$port|g" -e "s|__SMTP_USER__|$user|g" \
+    -e "s|__SMTP_FROM__|$from|g" -e "s|__ALERT_TO__|$to|g" "$HERE/alertmanager.yaml.tmpl" \
+  | put monitoring alertmanager-config alertmanager.yaml
 
-echo "done. Alerts go to the site's SMTP_USER address."
+echo "done. Alerts go out through the site's SMTP account."

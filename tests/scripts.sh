@@ -198,7 +198,12 @@ ts_env() {
   export STUB_NAMESPACES="observability monitoring prod"
   export STUB_SECRETS="prod/portfolio-api-env"
   # Quoted and padded, the way --from-env-file once stored them (README).
-  STUB_DATA_prod_portfolio_api_env_SMTP_USER=$(b64 '"alerts@example.com" ')
+  STUB_DATA_prod_portfolio_api_env_SMTP_USER=$(b64 '"resend" ')
+  STUB_DATA_prod_portfolio_api_env_SMTP_HOST=$(b64 'smtp.example.com ')
+  STUB_DATA_prod_portfolio_api_env_SMTP_PORT=$(b64 '"465"')
+  STUB_DATA_prod_portfolio_api_env_MAIL_FROM=$(b64 '"Site <alerts@example.com>"')
+  STUB_DATA_prod_portfolio_api_env_CONTACT_TO=$(b64 'owner@example.com')
+  export STUB_DATA_prod_portfolio_api_env_SMTP_HOST STUB_DATA_prod_portfolio_api_env_SMTP_PORT STUB_DATA_prod_portfolio_api_env_MAIL_FROM STUB_DATA_prod_portfolio_api_env_CONTACT_TO
   STUB_DATA_prod_portfolio_api_env_SMTP_PASS=$(b64 "'$SMTP_PASS_SENTINEL'
 ")
   export STUB_DATA_prod_portfolio_api_env_SMTP_USER STUB_DATA_prod_portfolio_api_env_SMTP_PASS
@@ -219,8 +224,10 @@ t_ts_stdin_only() {
     check "password on no argv" not_called "$SMTP_PASS_SENTINEL" &&
     check "password not printed" lacks "$OUT$ERR" "$SMTP_PASS_SENTINEL" &&
     check "token not printed" lacks "$OUT$ERR" "$token" &&
-    check "alertmanager config rendered with the address" contains "$cfg" "smtp_from: alerts@example.com" &&
-    check "no placeholder left" lacks "$cfg" "__SMTP_USER__" &&
+    check "alertmanager config rendered" contains "$cfg" "smtp_smarthost: smtp.example.com:465" &&
+    check "sender is the bare address" contains "$cfg" "smtp_from: alerts@example.com" &&
+    check "recipient from CONTACT_TO" contains "$cfg" "to: owner@example.com" &&
+    check "no placeholder left" lacks "$cfg" "__" &&
     check "every secret write is server-side apply from stdin" \
       [ "$(grep -c 'apply --server-side --field-manager=telemetry-secrets --force-conflicts -f -$' "$STUB_DIR/calls")" -eq 3 ] &&
     check "no client-side apply" not_called '^kubectl apply -f'
@@ -244,6 +251,16 @@ t_ts_no_pass() {
     check "no smtp secret written" not_called 'alertmanager-smtp'
 }
 t "telemetry-secrets: refuses an empty SMTP_PASS" t_ts_no_pass
+
+t_ts_no_host() {
+  ts_env
+  STUB_DATA_prod_portfolio_api_env_SMTP_HOST=$(b64 '""')
+  run k8s/telemetry-secrets.sh
+  check "exit non-zero (rc $RC)" [ "$RC" -ne 0 ] &&
+    check "names the missing key" contains "$ERR" "SMTP_HOST" &&
+    check "no smtp secret written" not_called 'alertmanager-smtp'
+}
+t "telemetry-secrets: refuses a missing SMTP_HOST" t_ts_no_host
 
 t_ps_stdin_only() {
   export STUB_NODE=present STUB_NAMESPACES="preprod prod" STUB_SECRETS="prod/ghcr-pull"
