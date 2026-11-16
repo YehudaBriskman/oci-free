@@ -12,7 +12,7 @@
 #   4. alertmanager.yaml.tmpl, rendered with dummy SMTP values (port 465), passes
 #      `amtool check-config`, and the routes do what docs/monitoring.md says
 #      (`amtool config routes test`): portfolio critical/warning and windom go
-#      to `email`, Watchdog and anything else to `null`.
+#      to `email`, Watchdog to `heartbeat` (the external dead-man switch) and anything else to `null`.
 #
 #   tests/alerts.sh     # needs python3 with PyYAML, and promtool/amtool on PATH
 #                       # or docker (the pinned prom/* images are then used)
@@ -149,7 +149,7 @@ route email   alertname=NodeCPUHigh team=portfolio severity=warning
 route email   alertname=PodNotReady team=portfolio severity=warning namespace=prod
 route email   alertname=WindomTokenReuse team=windom severity=page
 route email   alertname=WindomServerErrors team=windom severity=warning
-route null    alertname=Watchdog severity=none
+route heartbeat   alertname=Watchdog severity=none
 route null    alertname=KubeCPUOvercommit severity=warning
-route null    alertname=Watchdog team=portfolio severity=warning
+route heartbeat   alertname=Watchdog team=portfolio severity=warning
 [ "$fail" = 0 ]

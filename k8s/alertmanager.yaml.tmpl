@@ -24,8 +24,14 @@ route:
   receiver: "null"
   group_by: [alertname]
   routes:
+    # Watchdog always fires while Prometheus and Alertmanager work. It is
+    # POSTed to the external heartbeat (healthchecks.io) every 2 minutes; the
+    # outside service emails the owner when the pings stop. No data in the ping.
     - matchers: ['alertname = "Watchdog"']
-      receiver: "null"
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 2m
     # Token reuse and pool exhaustion: send at once and remind hourly.
     - matchers: ['team = "windom"', 'severity = "page"']
       receiver: email
@@ -64,6 +70,11 @@ inhibit_rules:
     target_matchers: ['team = "portfolio"', 'alertname !~ "Node.*"']
 
 receivers:
+  - name: heartbeat
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/alertmanager-heartbeat/url
+        send_resolved: false
+        max_alerts: 1
   - name: "null"
   - name: email
     email_configs:

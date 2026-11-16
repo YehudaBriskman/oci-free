@@ -34,7 +34,9 @@ alertmanager:
     # The SMTP password (Resend), mounted at
     # /etc/alertmanager/secrets/alertmanager-smtp/password, read via
     # smtp_auth_password_file. Never in values or in the config.
-    secrets: [alertmanager-smtp]
+    # alertmanager-heartbeat holds the external dead-man's-switch ping URL
+    # (key `url`, read via url_file). Created by hand, never in git.
+    secrets: [alertmanager-smtp, alertmanager-heartbeat]
 
 grafana:
   persistence:
