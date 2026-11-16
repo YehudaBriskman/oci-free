@@ -244,3 +244,14 @@ site is legitimately silent.
 `alloy-logs`), and its name to `names = [...]` and the `keep` regex in the
 config; extend the namespace list in the test in `tests/alerts.sh`; apply.
 Alloy rolls on a config change only if you `rollout restart` it.
+
+## Grafana panels empty, "Plugin not registered"
+
+Seen 2026-11-16: every dashboard and Explore were empty although Prometheus
+and Loki held data. Grafana 13 tries to pre-install its bundled data sources
+at start; with a read-only root filesystem that fails and prometheus, loki and
+tempo vanish from the plugin list (`/api/plugins/loki/settings` says "no
+installed plugin"; `/api/datasources/uid/loki/health` says "plugin.notRegistered").
+Fix: `plugins.preinstall_disabled: true` in `monitoring-values.yaml`
+(`GF_PLUGINS_PREINSTALL_DISABLED=true`; applied live with `kubectl set env`).
+Check after any Grafana upgrade: all three data source health endpoints say OK.

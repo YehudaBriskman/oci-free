@@ -68,6 +68,12 @@ grafana:
       whitelist: 10.42.0.0/16
     auth.anonymous:
       enabled: false
+    plugins:
+      # Grafana 13 "pre-installs" its bundled data sources at start. The root
+      # filesystem is read-only, so that fails and Prometheus, Loki and Tempo
+      # drop out of the plugin list ("Plugin not registered"): every panel is
+      # empty although the data is there. They already ship in the image.
+      preinstall_disabled: true
     users:
       # A header that does get through creates a Viewer, not an Admin (#15).
       # Existing users keep their role; promote a new one by hand in
