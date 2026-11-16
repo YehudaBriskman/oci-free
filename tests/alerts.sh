@@ -102,6 +102,99 @@ print(f"ok   {alerts} portfolio alerts have team, severity, summary and descript
 print(f"ok   {len(uids)} dashboards are valid JSON with unique uids")
 PY
 
+# 5: the log shipper (k8s/alloy.yaml, #61) is Pod Security `restricted`
+# compatible, can read nothing but pods and their logs in prod/preprod, is
+# fenced by NetworkPolicy, and its redaction stages mask what they claim to.
+python3 -I - <<'PY'
+import re, sys, yaml
+
+errors = []
+with open("k8s/alloy.yaml") as f:
+    docs = [d for d in yaml.safe_load_all(f) if d]
+by = lambda kind: [d for d in docs if d["kind"] == kind]
+
+dep = [d for d in by("Deployment") if d["metadata"]["name"] == "alloy"]
+if len(dep) != 1:
+    errors.append("alloy.yaml: expected one Deployment alloy")
+else:
+    spec = dep[0]["spec"]["template"]["spec"]
+    psc = spec.get("securityContext", {})
+    if psc.get("runAsNonRoot") is not True: errors.append("alloy: pod runAsNonRoot must be true")
+    if psc.get("seccompProfile", {}).get("type") != "RuntimeDefault": errors.append("alloy: seccompProfile RuntimeDefault missing")
+    for k in ("hostNetwork", "hostPID", "hostIPC"):
+        if spec.get(k): errors.append(f"alloy: {k} is set")
+    for v in spec.get("volumes", []):
+        if "hostPath" in v: errors.append(f"alloy: hostPath volume {v['name']}")
+    for c in spec["containers"] + spec.get("initContainers", []):
+        sc = c.get("securityContext", {})
+        if sc.get("allowPrivilegeEscalation") is not False: errors.append(f"alloy/{c['name']}: allowPrivilegeEscalation must be false")
+        if sc.get("readOnlyRootFilesystem") is not True: errors.append(f"alloy/{c['name']}: readOnlyRootFilesystem must be true")
+        if sc.get("capabilities", {}).get("drop") != ["ALL"]: errors.append(f"alloy/{c['name']}: capabilities.drop must be [ALL]")
+        if sc.get("privileged"): errors.append(f"alloy/{c['name']}: privileged")
+        if not c.get("resources", {}).get("limits", {}).get("memory"): errors.append(f"alloy/{c['name']}: memory limit missing")
+        if not re.search(r":v?\d[^@]*@sha256:[0-9a-f]{64}$", c["image"]): errors.append(f"alloy/{c['name']}: image must be pinned tag@digest")
+
+# RBAC: namespaced, read-only, pods and pods/log only, nothing cluster-wide.
+if by("ClusterRole") or by("ClusterRoleBinding"):
+    errors.append("alloy.yaml: no ClusterRole/ClusterRoleBinding expected (namespaced Roles in prod and preprod)")
+roles = by("Role")
+if sorted(r["metadata"]["namespace"] for r in roles) != ["preprod", "prod"]:
+    errors.append("alloy.yaml: Roles must exist in exactly prod and preprod")
+for r in roles:
+    for rule in r["rules"]:
+        res = set(rule.get("resources", []))
+        if not res <= {"pods", "pods/log"}: errors.append(f"Role {r['metadata']['namespace']}: resources beyond pods, pods/log: {sorted(res)}")
+        if "secrets" in res or "*" in res: errors.append(f"Role {r['metadata']['namespace']}: secrets or wildcard resource")
+        if not set(rule.get("verbs", [])) <= {"get", "list", "watch"}: errors.append(f"Role {r['metadata']['namespace']}: a write or wildcard verb")
+        if rule.get("apiGroups") != [""]: errors.append(f"Role {r['metadata']['namespace']}: apiGroups must be core only")
+
+# NetworkPolicy exists for Alloy and Loki accepts it.
+nps = {d["metadata"]["name"]: d for d in by("NetworkPolicy")}
+if "alloy" not in nps: errors.append("alloy.yaml: NetworkPolicy alloy missing")
+if "loki-from-alloy" not in nps: errors.append("alloy.yaml: NetworkPolicy loki-from-alloy missing")
+for b in nps.get("alloy", {}).get("spec", {}).get("egress", []):
+    for to in b.get("to", []):
+        if to.get("ipBlock", {}).get("cidr") == "0.0.0.0/0": errors.append("alloy egress: 0.0.0.0/0 is too wide")
+
+# Config: scoped, labelled, redacting. Python's re is close enough to RE2 for these.
+cm = [d for d in by("ConfigMap") if d["metadata"]["name"] == "alloy"][0]["data"]["config.alloy"]
+if 'names         = ["prod", "preprod"]' not in cm: errors.append("alloy config: namespaces must be exactly prod, preprod")
+if "/loki/api/v1/push" not in cm: errors.append("alloy config: push path /loki/api/v1/push missing")
+if 'values = ["namespace", "app", "pod", "container"]' not in cm: errors.append("alloy config: label_keep allowlist missing")
+exprs = re.findall(r"expression\s*=\s*`([^`]*)`\s*(?:replace\s*=\s*\"([^\"]*)\")?", cm)
+drop = [e for e, r in exprs if not r]
+reps = [(e, r) for e, r in exprs if r]
+def scrub(line):
+    if any(re.search(e, line) for e in drop):
+        return None
+    for e, r in reps:
+        line = re.sub(e, lambda m: m.group(0).replace(m.group(1), r) if m.groups() and m.group(1) else m.group(0), line)
+    return line
+for line in ['kube-probe/1.34 "GET /health/ready HTTP/1.1" 200', '{"url":"/metrics","status":200}', 'GET /health 200', '"GET /health?x=1 HTTP/1.1"']:
+    if scrub(line) is not None: errors.append(f"probe line not dropped: {line}")
+for line in ['GET /api/content 200', '{"url":"/api/healthcheck-notes"}']:
+    if scrub(line) is None: errors.append(f"normal line dropped: {line}")
+secrets = {
+  "jane.doe+x@example.co.uk": 'contact from jane.doe+x@example.co.uk failed',
+  "abcDEF123456": 'Authorization: Bearer abcDEF123456',
+  "s3cr3tvalue": 'GET /api/x?api_key=s3cr3tvalue&page=2',
+  "placeholder": 'url=/cb?access_token=placeholder',
+  "sessionid=deadbeef": 'Cookie: sessionid=deadbeef; theme=dark',
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig": 'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig in body',
+  "Basic dXNlcjpwYXNz": '{"authorization":"Basic dXNlcjpwYXNz"}',
+}
+for secret, line in secrets.items():
+    out = scrub(line)
+    if out is None or secret in out or "[" not in out:
+        errors.append(f"not redacted ({secret!r}): {out!r}")
+if "page=2" not in (scrub('GET /api/x?api_key=s3cr3tvalue&page=2') or ""): errors.append("redaction ate the rest of the query string")
+
+if errors:
+    print("\n".join("FAIL " + e for e in errors))
+    sys.exit(1)
+print("ok   alloy: restricted-compatible, read-only pods/log RBAC in prod+preprod, NetworkPolicies, redaction samples")
+PY
+
 # 2 + 4: promtool and amtool, local or from the pinned images.
 run_tool() { # run_tool <promtool|amtool> args...  (files live in $work, mounted at /w)
   local tool=$1; shift
