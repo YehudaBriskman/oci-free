@@ -19,7 +19,15 @@
 #     anything on the tailnet uses. kubelet (10250), node_exporter (9100),
 #     rpcbind (111) and NodePorts were open to every tailnet device.
 #     `--dst-type LOCAL` limits this to traffic FOR the node, so exit-node
-#     traffic passing through is untouched.
+#     traffic passing through is untouched by THIS rule; rule 3 covers it.
+#  3. This node is an exit node on purpose (0.0.0.0/0 and ::/0 advertised, ip_forward=1),
+#     so a tailnet peer can send traffic THROUGH it. That traffic is forwarded,
+#     not local, and rule 2 does not see it. A peer using the exit node must reach the
+#     public internet and nothing else: NEW connections arriving on tailscale0 and
+#     forwarded to the metadata link-local range, the VCN, the pod and service
+#     networks (10.42/16, 10.43/16 sit in 10/8), docker, or any other private range
+#     are dropped. IPv6: unique-local space is dropped except the tailnet's own
+#     fd7a:115c:a1e0::/48. Public destinations are untouched, so the exit node works.
 #
 # Installed by cloud-init (new nodes) as /usr/local/sbin/oci-free-guard plus
 # oci-free-guard.service. On the running node: see README "Host firewall".
@@ -49,6 +57,18 @@ build() {  # build <iptables|ip6tables>
     $t -t mangle -A OCI-FREE-GUARD "${new[@]}" -p ipv6-icmp -j RETURN
   fi
   $t -t mangle -A OCI-FREE-GUARD "${new[@]}" -j DROP
+  # 3. Forwarded (exit-node) traffic from the tailnet: public internet only.
+  local fwd=(-i tailscale0 -m addrtype ! --dst-type LOCAL -m conntrack --ctstate NEW) d
+  if [ "$t" = iptables ]; then
+    for d in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+      $t -t mangle -A OCI-FREE-GUARD "${fwd[@]}" -d "$d" -j DROP
+    done
+  else
+    $t -t mangle -A OCI-FREE-GUARD "${fwd[@]}" -d fd7a:115c:a1e0::/48 -j RETURN
+    for d in fc00::/7 fe80::/10; do
+      $t -t mangle -A OCI-FREE-GUARD "${fwd[@]}" -d "$d" -j DROP
+    done
+  fi
   $t -t mangle -C PREROUTING -j OCI-FREE-GUARD 2>/dev/null || $t -t mangle -I PREROUTING 1 -j OCI-FREE-GUARD
 }
 

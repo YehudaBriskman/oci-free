@@ -55,7 +55,10 @@ On first boot only:
 - joins the private network, enables IP forwarding and fixes the host firewall;
 - installs the host firewall guard (`node/oci-free-guard.sh`), which keeps pods
   away from the instance metadata service and limits what private-network peers
-  can open on the node;
+  can open on the node. The node is an exit node on purpose, so the guard also
+  drops NEW connections that tailnet peers forward through it to the metadata
+  range, the VCN, the pod and service networks and other private space: an exit-node
+  peer reaches the public internet and nothing else (#873);
 - enables unattended security upgrades.
 
 k3s is installed by hand after that, and its kubeconfig merged into the

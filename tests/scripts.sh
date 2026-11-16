@@ -358,6 +358,27 @@ t_guard_dns() {
 }
 t "oci-free-guard: pods keep DNS to the VCN resolver, metadata stays blocked" t_guard_dns
 
+# The node is an exit node on purpose, so tailnet peers can send traffic THROUGH
+# it. The guard must drop NEW forwarded connections from tailscale0 to the
+# metadata range, the VCN, the pod/service networks and other private space,
+# and must leave the public internet (and the tailnet's own IPv6 range) alone.
+t_guard_forwarded() {
+  run node/oci-free-guard.sh apply
+  local fwd='-i tailscale0 -m addrtype \\! --dst-type LOCAL -m conntrack --ctstate NEW'
+  local d
+  check "exit 0 (rc $RC: $ERR)" [ "$RC" -eq 0 ] || return 1
+  for d in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+    check "iptables drops forwarded tailnet traffic to $d" called "^iptables -t mangle -A OCI-FREE-GUARD $fwd -d ${d//\//\\/} -j DROP$" || return 1
+  done
+  for d in fc00::/7 fe80::/10; do
+    check "ip6tables drops forwarded tailnet traffic to $d" called "^ip6tables -t mangle -A OCI-FREE-GUARD $fwd -d ${d//\//\\/} -j DROP$" || return 1
+  done
+  check "the tailnet's own IPv6 range is let through" called "^ip6tables -t mangle -A OCI-FREE-GUARD $fwd -d fd7a:115c:a1e0::/48 -j RETURN$" &&
+    check "no rule drops public space (no 0.0.0.0/0 or ::/0 drop)" not_called '-d (0\.0\.0\.0/0|::/0) -j DROP' &&
+    check "local rules unchanged: tailnet may reach ssh/80/443/6443 only" called '-m multiport --dports 22\\,80\\,443\\,6443 -j RETURN$'
+}
+t "oci-free-guard: exit-node traffic from the tailnet reaches the public internet only" t_guard_forwarded
+
 echo
 echo "scripts: $pass passed, $fail failed"
 for f in "${failed[@]}"; do echo "  failed: $f"; done
