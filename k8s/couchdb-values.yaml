@@ -32,3 +32,9 @@ resources:
 
 service:
   type: ClusterIP
+
+# The chart's own NetworkPolicy lets ANY pod reach 5984. Policies add up, so it
+# would cancel k8s/network-policies.yaml (the `couchdb` policy in obsidian),
+# which allows only the edge, prod's api, the backup job and Prometheus.
+networkPolicy:
+  enabled: false
