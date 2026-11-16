@@ -1,0 +1,86 @@
+# The portfolio API's own metrics (portfolio_site #890, tagged v1.9.0).
+#
+# The API serves Prometheus metrics on a separate listener, container port 9464
+# (METRICS_PORT), never on the public 5000 and never through the Service or an
+# Ingress. A PodMonitor scrapes the pod by port NUMBER, so the Deployment needs
+# no change and no restart. With default NetworkPolicy absent in prod/preprod
+# nothing else is needed.
+#
+# Alerts are on prod only (preprod is scraped for the dashboards, never paged).
+# Every rule carries team=portfolio, which alertmanager.yaml.tmpl emails on.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: portfolio-api
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  selector: {matchLabels: {app: api}}
+  namespaceSelector: {matchNames: [prod, preprod]}
+  podMetricsEndpoints:
+    - portNumber: 9464
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-api
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    - name: portfolio-api
+      rules:
+        - alert: PortfolioApiMetricsDown
+          expr: |
+            count(up{namespace="prod", pod=~"api-.*"} == 0) > 0
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "An API pod's metrics endpoint is not answering"
+            description: "up is 0 for a prod api pod for 10 minutes. The API may still serve traffic: check the pod and /health."
+
+        - alert: PortfolioMailSendFailureRatioHigh
+          expr: |
+            sum(rate(mail_send_total{namespace="prod", result="failed"}[15m]))
+              / clamp_min(sum(rate(mail_send_total{namespace="prod", result=~"ok|failed"}[15m])), 1e-9) > 0.10
+            and sum(increase(mail_send_total{namespace="prod", result=~"ok|failed"}[15m])) >= 5
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "More than 10% of outgoing mail is failing"
+            description: "mail_send_total failed ratio over 15m is above 10% (at least 5 attempts). Check the Resend dashboard and the API logs (auth, relay, bounces)."
+
+        - alert: PortfolioApi5xxRatioHigh
+          expr: |
+            sum(rate(http_requests_total{namespace="prod", status_class="5xx"}[5m]))
+              / clamp_min(sum(rate(http_requests_total{namespace="prod"}[5m])), 1e-9) > 0.05
+            and sum(increase(http_requests_total{namespace="prod"}[5m])) >= 20
+          for: 5m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "More than 5% of API requests are 5xx"
+            description: "Check the api pod logs in Grafana (Portfolio: logs) and CouchDB reachability (/health/ready)."
+
+        - alert: PortfolioApi5xxRatioHigh
+          expr: |
+            sum(rate(http_requests_total{namespace="prod", status_class="5xx"}[5m]))
+              / clamp_min(sum(rate(http_requests_total{namespace="prod"}[5m])), 1e-9) > 0.20
+            and sum(increase(http_requests_total{namespace="prod"}[5m])) >= 20
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "More than 20% of API requests are 5xx"
+            description: "The API is largely failing. Roll back the last rollout if it coincides."
+
+        - alert: PortfolioCampaignQueueStuck
+          expr: |
+            max(campaign_queue_depth{namespace="prod", state="sending"}) > 0
+            and sum(increase(mail_send_total{namespace="prod", result=~"ok|failed|suppressed"}[30m])) == 0
+          for: 30m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "A campaign is sending but no mail has moved for 30 minutes"
+            description: "Quiet hours, an owner pause, a held relay or SEND_ENABLED not being true also look like this; check the admin Campaigns view."

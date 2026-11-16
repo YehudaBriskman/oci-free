@@ -110,6 +110,7 @@ or queue alerts; that is a follow-up in that repository.
 | probes | `probe_*` | `k8s/blackbox.yaml` (new) |
 | Traefik | `traefik_service_*` | PodMonitor in `k8s/portfolio-scrapes.yaml` (new) |
 | certificates | `certmanager_certificate_*` | PodMonitor in `k8s/portfolio-scrapes.yaml` (new; controller pod port `http-metrics`, 9402) |
+| portfolio API | `http_requests_total`, `mail_send_total`, `campaign_queue_depth` | PodMonitor in `k8s/portfolio-api-metrics.yaml` (API image v1.9.0+, internal port 9464, scraped by number, never public; alerts on prod only) |
 
 A rule on a series that does not exist stays silent. After applying, open
 Prometheus **Status > Targets** (or run the queries in Grafana Explore) and
