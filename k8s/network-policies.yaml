@@ -1,0 +1,178 @@
+# Ingress NetworkPolicies for the workload namespaces (#19). k3s enforces them
+# with its embedded kube-router controller.
+#
+# Shape, per namespace: default-deny ingress, then allow exactly the callers
+# that exist today:
+#   Traefik (kube-system)   the edge. It is the only thing that routes to these
+#                           Services (see the Ingress list in docs/kubernetes.md).
+#   Prometheus + blackbox   (monitoring) scrape metrics and probe /health.
+#   same-namespace pods     web -> api, api -> couch / mail in preprod.
+# Not covered, deliberately: kubelet health probes and `kubectl port-forward`
+# come from the node itself, which the controller always lets through.
+#
+# Ingress only. Egress is not restricted here: pods reach SMTP, GitHub and
+# Cloudflare, and the instance metadata service is already blocked on the node
+# (node/oci-free-guard.sh).
+#
+# Not yet covered: monitoring, forgejo, cert-manager, kube-system. observability
+# has its own (observability.yaml). One namespace at a time, preprod first.
+#
+# Roll back one namespace:  kubectl -n NS delete networkpolicy --all
+#
+# Selectors reused below:
+#   Traefik:    kube-system + app.kubernetes.io/name=traefik
+#   Prometheus: monitoring + app.kubernetes.io/name in (prometheus, blackbox-exporter)
+
+# ---------------------------------------------------------------- preprod
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: preprod}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: web, namespace: preprod}
+spec:
+  podSelector: {matchLabels: {app: web}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: [prometheus, blackbox-exporter]}]}
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api, namespace: preprod}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Ingress]
+  ingress:
+    # web's nginx proxies /api here; blackbox probes /health.
+    - from:
+        - podSelector: {matchLabels: {app: web}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: [prometheus, blackbox-exporter]}]}
+      ports: [{protocol: TCP, port: 5000}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 9464}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: couch, namespace: preprod}
+spec:
+  podSelector: {matchLabels: {app: couch}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: api}}}]
+      ports: [{protocol: TCP, port: 5984}]
+---
+# Mailpit: SMTP from the api only. Its web UI (8025) is reached by
+# `kubectl port-forward`, which does not pass through this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mail, namespace: preprod}
+spec:
+  podSelector: {matchLabels: {app: mail}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: api}}}]
+      ports: [{protocol: TCP, port: 1025}]
+---
+# ------------------------------------------------------------------- prod
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: prod}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: web, namespace: prod}
+spec:
+  podSelector: {matchLabels: {app: web}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: [prometheus, blackbox-exporter]}]}
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api, namespace: prod}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Ingress]
+  ingress:
+    # Traefik routes admin.<domain>/api straight here; web's nginx proxies the
+    # public /api; blackbox probes /health.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+        - podSelector: {matchLabels: {app: web}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: [prometheus, blackbox-exporter]}]}
+      ports: [{protocol: TCP, port: 5000}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 9464}]
+---
+# ------------------------------------------------------------------- auth
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: auth}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Traefik calls oauth2-proxy both as the Ingress backend (the login pages) and
+# as the forwardAuth target for every gated request.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: oauth2-proxy, namespace: auth}
+spec:
+  podSelector: {matchLabels: {app: oauth2-proxy}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+      ports: [{protocol: TCP, port: 4180}]
+---
+# --------------------------------------------------------------- obsidian
+# The shared CouchDB: the edge (couchdb.<domain>), prod's api, the backup job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: couchdb, namespace: obsidian}
+spec:
+  podSelector: {matchLabels: {app: couchdb}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: prod}}
+          podSelector: {matchLabels: {app: api}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: backup}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+      ports: [{protocol: TCP, port: 5984}]
+---
+# ----------------------------------------------------------------- backup
+# Nothing connects in to the backup job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: backup}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
