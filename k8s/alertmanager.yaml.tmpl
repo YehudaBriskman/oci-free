@@ -5,8 +5,10 @@
 # The Gmail app password is never in here: it is read from a file mounted from
 # the Secret `alertmanager-smtp`.
 #
-# Only alerts labelled team=windom are emailed. Everything else, including the
-# chart's stock cluster alerts, still goes to "null" as it did before #14.
+# Only alerts labelled team=windom (#14) or team=portfolio (#54, the rules in
+# portfolio-alerts.yaml) are emailed. Everything else, including the chart's
+# stock cluster alerts, still goes to "null" as it did before #14. Both teams
+# use the one `email` receiver, so there is a single address to maintain.
 global:
   smtp_smarthost: smtp.gmail.com:587
   smtp_from: __SMTP_USER__
@@ -32,6 +34,31 @@ route:
       group_wait: 30s
       group_interval: 5m
       repeat_interval: 4h
+    # Node, container, stack and uptime alerts (#54). Grouped by alertname and
+    # namespace so ten pods of one problem are one email, not ten.
+    - matchers: ['team = "portfolio"']
+      receiver: email
+      group_by: [alertname, namespace]
+      routes:
+        - matchers: ['severity = "critical"']
+          receiver: email
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 1h
+        - matchers: ['severity = "warning"']
+          receiver: email
+          group_wait: 1m
+          group_interval: 5m
+          repeat_interval: 6h
+
+inhibit_rules:
+  # The critical mutes the same alert's warning for the same target.
+  - source_matchers: ['team = "portfolio"', 'severity = "critical"']
+    target_matchers: ['team = "portfolio"', 'severity = "warning"']
+    equal: [alertname, namespace, instance, name, pod, container, mountpoint, persistentvolumeclaim, deployment, cronjob, service]
+  # A node that is down explains every pod, probe, edge and backup alert.
+  - source_matchers: ['team = "portfolio"', 'alertname = "NodeDown"']
+    target_matchers: ['team = "portfolio"', 'alertname !~ "Node.*"']
 
 receivers:
   - name: "null"
