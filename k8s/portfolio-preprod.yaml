@@ -107,14 +107,17 @@ metadata: {name: github-auth, namespace: preprod}
 spec:
   forwardAuth:
     address: http://oauth2-proxy.auth.svc.cluster.local:4180/
-    trustForwardHeader: true
+    # false on purpose (#21): Traefik must write X-Forwarded-* itself. With true,
+    # a client could claim any X-Forwarded-Uri. Do NOT 'fix' #7 with
+    # forwardedHeaders.trustedIPs on the pod CIDR: that trusts every client.
+    trustForwardHeader: false
     authResponseHeaders:
       - X-Auth-Request-User
       - X-Auth-Request-Email
 ---
 # Remove anything the CLIENT claims about itself, before github-auth answers
 # who it really is. Without this a request could arrive carrying its own
-# X-Auth-Request-User. Same shape as prod's in k8s/admin-gate.template.yaml.
+# X-Auth-Request-User. Same shape as prod's in k8s/admin-gate.yaml.tmpl.
 #
 # Why preprod needs the admin gate at all: the API's /api/admin requires the
 # X-Admin-Proxy-Secret proof AND the expected login (requireAdmin.ts). Preprod
@@ -375,7 +378,7 @@ metadata:
     traefik.ingress.kubernetes.io/router.tls: "true"
     # Order matters only in that the allowlist should reject before anything
     # else runs. Middlewares are namespaced, hence the `preprod-` prefix.
-    # The admin gate's three, in prod's order (k8s/admin-gate.template.yaml),
+    # The admin gate's three, in prod's order (k8s/admin-gate.yaml.tmpl),
     # then the noindex. `preprod-inject-proxy-secret` is NOT in this file: it
     # carries the secret, so k8s/preprod-admin-gate.sh renders it from the
     # namespace's own portfolio-api-env and applies it. Run that script before
