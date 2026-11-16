@@ -156,7 +156,7 @@ spec:
         - name: api
           # No `image:` on purpose; CI owns it. See the header.
           imagePullPolicy: IfNotPresent
-          ports: [{containerPort: 5000}]
+          ports: [{name: http, containerPort: 5000}, {name: metrics, containerPort: 9464}]
           envFrom:
             - secretRef: {name: portfolio-api-env}
           env:
