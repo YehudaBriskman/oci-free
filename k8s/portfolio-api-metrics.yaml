@@ -2,9 +2,10 @@
 #
 # The API serves Prometheus metrics on a separate listener, container port 9464
 # (METRICS_PORT), never on the public 5000 and never through the Service or an
-# Ingress. A PodMonitor scrapes the pod by port NUMBER, so the Deployment needs
-# no change and no restart. With default NetworkPolicy absent in prod/preprod
-# nothing else is needed.
+# Ingress. The api container declares it as the named port `metrics`
+# (portfolio.yaml, portfolio-preprod.yaml): Prometheus discovers only declared
+# container ports, so a PodMonitor by bare port number finds no target. It is
+# not in the api Service, so it is reachable inside the cluster only.
 #
 # Alerts are on prod only (preprod is scraped for the dashboards, never paged).
 # Every rule carries team=portfolio, which alertmanager.yaml.tmpl emails on.
@@ -18,7 +19,7 @@ spec:
   selector: {matchLabels: {app: api}}
   namespaceSelector: {matchNames: [prod, preprod]}
   podMetricsEndpoints:
-    - portNumber: 9464
+    - port: metrics
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s
