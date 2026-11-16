@@ -184,7 +184,7 @@ spec:
             - {name: NGINX_FORWARD_IDENTITY, value: "on"}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
-            limits:   {memory: 128Mi}
+            limits:   {cpu: 200m, memory: 128Mi}
           readinessProbe:
             httpGet: {path: /, port: 8080}
             initialDelaySeconds: 3
@@ -225,7 +225,7 @@ spec:
             - {name: NODE_ENV, value: production}
           resources:
             requests: {cpu: 20m, memory: 64Mi}
-            limits:   {memory: 512Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
 ---
 # The name "api" is load-bearing here exactly as it is in prod: the frontend's
 # nginx.conf proxies /api/ to port 5000 on it, resolved per request through
@@ -283,7 +283,7 @@ spec:
             # content in it. 128Mi requested, 512Mi ceiling so a compaction or
             # a replication in does not get OOM-killed halfway.
             requests: {cpu: 50m, memory: 128Mi}
-            limits:   {memory: 512Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
           readinessProbe:
             httpGet: {path: /_up, port: 5984}
             initialDelaySeconds: 5
@@ -334,7 +334,7 @@ spec:
             - {name: MP_MAX_MESSAGES, value: "200"}
           resources:
             requests: {cpu: 10m, memory: 32Mi}
-            limits:   {memory: 64Mi}
+            limits:   {cpu: 100m, memory: 64Mi}
 ---
 apiVersion: v1
 kind: Service
