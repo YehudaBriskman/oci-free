@@ -24,7 +24,7 @@ proxy, which is the stronger control anyway.
 | `portfolio.yaml` | the `prod` namespace: `web` (nginx serving the SPA) and `api` Deployments and Services |
 | `portfolio-preprod.yaml` | the `preprod` namespace: the same two, plus its own CouchDB and a mail sink, private-network only and `noindex` |
 | `namespaces.yaml` | Pod Security admission labels for namespaces no other file declares (`prod`, `auth`, `obsidian`, `cert-manager`, `monitoring`, `forgejo`); the reasoning per namespace is in the file |
-| `network-policies.yaml` | ingress default-deny plus the exact callers allowed, for `prod`, `preprod`, `auth`, `obsidian` and `backup` (`observability` has its own) |
+| `network-policies.yaml` | ingress default-deny plus the exact callers allowed, for every workload namespace: `prod`, `preprod`, `auth`, `obsidian`, `backup`, `cert-manager`, `forgejo`, `monitoring` (`observability` has its own) |
 | `ci-rollout-rbac.yaml` | per-environment service accounts for CI (see [Deploy](deploy.md)) |
 | `couchdb-values.yaml`, `couchdb-ingress.yaml` | the shared CouchDB (Helm), reachable only from the private network and with basic auth on top |
 
