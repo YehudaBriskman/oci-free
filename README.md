@@ -76,6 +76,8 @@ environment. Details: [Deploy](docs/deploy.md).
 - [Kubernetes](docs/kubernetes.md): every file in `k8s/`, pinned Helm
   releases, rebuilding the cluster
 - [Deploy](docs/deploy.md): the rollout scripts and CI's access
+- [Monitoring](docs/monitoring.md): alert thresholds, uptime probes,
+  dashboards, email routing, how to test an alert
 - [Backups](docs/backups.md): what is backed up, when, and its limits
 
 ## Rebuild

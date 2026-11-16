@@ -193,6 +193,24 @@ jobs:
       - name: Script tests
         run: tests/scripts.sh
 
+  # The monitoring code (tests/alerts.sh): every alert has a team, severity,
+  # summary and description; promtool accepts the rules and the unit tests
+  # fire; the dashboards are valid JSON with unique uids; amtool accepts the
+  # Alertmanager config and routes portfolio/windom alerts to email. Seconds
+  # once the two pinned prom/* images are pulled.
+  alerts:
+    name: Alerts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: PyYAML for the rule extraction
+        run: python3 -I -c 'import yaml' || { sudo apt-get update -q && sudo apt-get install -y -q python3-yaml; }
+      - name: Alerts, dashboards and Alertmanager routes
+        run: tests/alerts.sh
+
   # The one answer for the run (.github/scripts/ci-gate.sh). A skipped job is
   # fine when classification did not select it; a failure, a cancellation, or
   # a skip classification did not ask for fails the gate.
@@ -202,7 +220,7 @@ jobs:
   gate:
     name: CI gate
     runs-on: ubuntu-latest
-    needs: [classify, secrets, shell, manifests, helm, tofu, telemetry, scripts]
+    needs: [classify, secrets, shell, manifests, helm, tofu, telemetry, scripts, alerts]
     if: always()
     timeout-minutes: 5
     steps:

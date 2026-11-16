@@ -1,0 +1,36 @@
+# New scrapes for the portfolio alerts (#54): nothing in the chart's defaults
+# collects these two. Both are labelled `release: kube-prometheus-stack`, the
+# chart's selector. If a target does not appear in Prometheus afterwards, the
+# alerts that need it stay silent (docs/monitoring.md, "What needs what").
+#
+# Traefik (k3s's bundled chart) serves Prometheus metrics on the container
+# port named `metrics`; k8s/traefik-config.yaml does not turn them off.
+# Labels are per service/router, not per Host header.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: traefik
+  namespace: kube-system
+  labels: {release: kube-prometheus-stack}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: traefik}}
+  namespaceSelector: {matchNames: [kube-system]}
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+---
+# cert-manager's controller (Service `cert-manager`, port tcp-prometheus-handler
+# 9402 in the upstream chart): certificate expiry and readiness.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels: {release: kube-prometheus-stack}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: cert-manager, app.kubernetes.io/component: controller}
+  namespaceSelector: {matchNames: [cert-manager]}
+  endpoints:
+    - port: tcp-prometheus-handler
+      interval: 60s

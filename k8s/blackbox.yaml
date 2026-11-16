@@ -1,0 +1,190 @@
+# Uptime probes (#54): the Prometheus Blackbox exporter and the Probe objects
+# the Prometheus operator turns into scrape jobs. Alerts on probe_* series are
+# in portfolio-alerts.yaml.
+#
+# Two kinds of target, on purpose:
+#  - PUBLIC URLs, probed from inside the cluster, so the check covers DNS, the
+#    certificate, Traefik and the Ingress as a visitor meets them. If a probe of
+#    a public URL fails but its in-cluster twin passes, the edge is the fault.
+#    (This relies on a pod being able to reach the node's own public address;
+#    verify probe_success after applying, see docs/monitoring.md.)
+#  - IN-CLUSTER Services, for what is not reachable from outside: the API's
+#    /health and /health/ready (nginx forwards only /api/* to the API, so
+#    neither is public) and preprod, which is tailnet-only at the edge.
+#
+# Pinned by tag and digest (the digest is the multi-arch index, so it is the
+# same on the A1's arm64). Non-root, read-only root filesystem, no capabilities,
+# memory-limited. Applied with kubectl, not by Helm.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: blackbox-exporter, namespace: monitoring}
+data:
+  blackbox.yml: |
+    modules:
+      # A page or endpoint that must answer 2xx. Redirects are followed.
+      http_2xx:
+        prober: http
+        timeout: 10s
+        http:
+          preferred_ip_protocol: ip4
+      # The admin host sits behind oauth2-proxy: an unauthenticated request is
+      # redirected to the SSO (302) or refused (401/403). Any of those means
+      # Traefik, the middleware chain and oauth2-proxy are all answering.
+      http_sso:
+        prober: http
+        timeout: 10s
+        http:
+          preferred_ip_protocol: ip4
+          valid_status_codes: [200, 302, 401, 403]
+          no_follow_redirects: true
+          fail_if_not_ssl: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: blackbox-exporter, namespace: monitoring}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: blackbox-exporter}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: blackbox-exporter}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: blackbox-exporter
+          image: prom/blackbox-exporter:v0.29.1@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13
+          args: ["--config.file=/config/blackbox.yml"]
+          ports: [{name: http, containerPort: 9115}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits:   {memory: 96Mi}
+          readinessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            initialDelaySeconds: 10
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: blackbox-exporter}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: blackbox-exporter, namespace: monitoring}
+spec:
+  selector: {app.kubernetes.io/name: blackbox-exporter}
+  ports: [{name: http, port: 9115, targetPort: http}]
+---
+# Only Prometheus may ask the exporter to probe (an open probe endpoint is an
+# SSRF proxy for anything that can reach it). It may call out to anything but
+# the cloud metadata service; it never needs the API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: blackbox-exporter, namespace: monitoring}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: blackbox-exporter}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 9115}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: [169.254.169.254/32]}
+---
+# The label `release` (the chart's probeSelector) is the contract; `probe_group`
+# and `env` are what the alerts and the dashboard group by.
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: public-site
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack}
+spec:
+  prober: {url: blackbox-exporter.monitoring.svc:9115}
+  module: http_2xx
+  interval: 30s
+  scrapeTimeout: 15s
+  targets:
+    staticConfig:
+      static:
+        - https://yehudabriskman.com/
+        # The public MCP server's OAuth metadata (nginx forwards it to the
+        # API; 404s while MCP_REMOTE=off, which would alert: a change worth
+        # knowing about).
+        - https://yehudabriskman.com/.well-known/oauth-authorization-server
+        # A cheap public API read: nginx -> api -> CouchDB.
+        - https://yehudabriskman.com/api/content
+      labels: {probe_group: public, env: prod}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: public-admin
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack}
+spec:
+  prober: {url: blackbox-exporter.monitoring.svc:9115}
+  module: http_sso
+  interval: 30s
+  scrapeTimeout: 15s
+  targets:
+    staticConfig:
+      static:
+        - https://admin.yehudabriskman.com/
+      labels: {probe_group: public-sso, env: prod}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: cluster-prod
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack}
+spec:
+  prober: {url: blackbox-exporter.monitoring.svc:9115}
+  module: http_2xx
+  interval: 30s
+  scrapeTimeout: 15s
+  targets:
+    staticConfig:
+      static:
+        - http://web.prod.svc.cluster.local/
+        # Liveness, and readiness (CouchDB reachable): portfolio_site's
+        # backend/src/app.ts. Not exposed publicly.
+        - http://api.prod.svc.cluster.local:5000/health
+        - http://api.prod.svc.cluster.local:5000/health/ready
+      labels: {probe_group: cluster, env: prod}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: cluster-preprod
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack}
+spec:
+  prober: {url: blackbox-exporter.monitoring.svc:9115}
+  module: http_2xx
+  interval: 30s
+  scrapeTimeout: 15s
+  targets:
+    staticConfig:
+      static:
+        - http://web.preprod.svc.cluster.local/
+        - http://api.preprod.svc.cluster.local:5000/health
+        - http://api.preprod.svc.cluster.local:5000/health/ready
+      labels: {probe_group: cluster, env: preprod}

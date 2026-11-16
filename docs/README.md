@@ -9,6 +9,7 @@ addresses or credentials.
 | [Infrastructure](infrastructure.md) | what OpenTofu creates, the Always Free envelope, the closed-by-default network, the cloud-init bootstrap |
 | [Kubernetes](kubernetes.md) | every manifest and Helm values file in `k8s/`, pinned Helm releases, rebuilding the cluster |
 | [Deploy](deploy.md) | how the site's CI rolls out to `prod` and `preprod`, the rollout scripts, what CI's credentials can do |
+| [Monitoring](monitoring.md) | alert thresholds, uptime probes, dashboards, where the emails go, silencing and testing an alert |
 | [Backups](backups.md) | the nightly CouchDB and Forgejo jobs, what they do and do not protect against, restoring |
 
 The architecture diagram is [`readme/architecture.svg`](readme/architecture.svg)

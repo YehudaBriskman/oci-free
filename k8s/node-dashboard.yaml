@@ -1,0 +1,621 @@
+# The host dashboard for the OCI node (#54), same loading mechanism as
+# portfolio-dashboard.yaml. The amber and red lines are the 70% / 90% alert
+# thresholds in portfolio-alerts.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-dashboard
+  namespace: monitoring
+  labels: {grafana_dashboard: "1"}
+data:
+  node.json: |
+    {
+     "uid": "node-oci-free",
+     "title": "Node: oci-free",
+     "tags": [
+      "portfolio",
+      "node"
+     ],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "editable": false,
+     "refresh": "1m",
+     "time": {
+      "from": "now-6h",
+      "to": "now"
+     },
+     "templating": {
+      "list": []
+     },
+     "annotations": {
+      "list": []
+     },
+     "panels": [
+      {
+       "id": 1,
+       "type": "timeseries",
+       "title": "CPU, % busy",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percent",
+         "min": 0,
+         "max": 100,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "#EAB839",
+            "value": 70
+           },
+           {
+            "color": "red",
+            "value": 90
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "100 - avg by (instance) (rate(node_cpu_seconds_total{job=\"node-exporter\",mode=\"idle\"}[5m])) * 100",
+         "legendFormat": "{{instance}}"
+        }
+       ],
+       "description": "Warning above 70% for 15m, critical above 90% for 10m.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 2,
+       "type": "timeseries",
+       "title": "Memory used, %",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percent",
+         "min": 0,
+         "max": 100,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "#EAB839",
+            "value": 70
+           },
+           {
+            "color": "red",
+            "value": 90
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "(1 - node_memory_MemAvailable_bytes{job=\"node-exporter\"} / node_memory_MemTotal_bytes{job=\"node-exporter\"}) * 100",
+         "legendFormat": "{{instance}}"
+        }
+       ],
+       "description": "Total minus MemAvailable. Warning 70%, critical 90%.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 3,
+       "type": "timeseries",
+       "title": "Disk used, %",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percent",
+         "min": 0,
+         "max": 100,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "#EAB839",
+            "value": 70
+           },
+           {
+            "color": "red",
+            "value": 90
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "(1 - node_filesystem_avail_bytes{job=\"node-exporter\",fstype!~\"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat\"} / node_filesystem_size_bytes{job=\"node-exporter\",fstype!~\"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat\"}) * 100",
+         "legendFormat": "{{mountpoint}}"
+        }
+       ],
+       "description": "Every real filesystem (root and data disk). Warning 70%, critical 90%.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 4,
+       "type": "timeseries",
+       "title": "Inodes used, %",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percent",
+         "min": 0,
+         "max": 100,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "red",
+            "value": 90
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "(1 - node_filesystem_files_free{job=\"node-exporter\",fstype!~\"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat\"} / node_filesystem_files{job=\"node-exporter\",fstype!~\"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat\"}) * 100",
+         "legendFormat": "{{mountpoint}}"
+        }
+       ],
+       "description": "NodeInodesHigh fires above 90%.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 5,
+       "type": "timeseries",
+       "title": "Network, bytes / s",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "Bps",
+         "custom": {
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (instance) (rate(node_network_receive_bytes_total{job=\"node-exporter\",device!~\"lo|veth.*|cni.*|flannel.*|cali.*\"}[5m]))",
+         "legendFormat": "rx {{instance}}"
+        },
+        {
+         "refId": "B",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "-sum by (instance) (rate(node_network_transmit_bytes_total{job=\"node-exporter\",device!~\"lo|veth.*|cni.*|flannel.*|cali.*\"}[5m]))",
+         "legendFormat": "tx {{instance}}"
+        }
+       ],
+       "description": "Receive above zero, transmit mirrored below.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 6,
+       "type": "timeseries",
+       "title": "Load per core (5m)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short",
+         "min": 0,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "#EAB839",
+            "value": 1.5
+           },
+           {
+            "color": "red",
+            "value": 3
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "node_load5{job=\"node-exporter\"} / count by (instance) (node_cpu_seconds_total{job=\"node-exporter\",mode=\"idle\"})",
+         "legendFormat": "{{instance}}"
+        }
+       ],
+       "description": "Warning above 1.5 per core, critical above 3.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 7,
+       "type": "timeseries",
+       "title": "Swap used, %",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percent",
+         "min": 0,
+         "max": 100,
+         "thresholds": {
+          "mode": "absolute",
+          "steps": [
+           {
+            "color": "green",
+            "value": null
+           },
+           {
+            "color": "#EAB839",
+            "value": 70
+           },
+           {
+            "color": "red",
+            "value": 90
+           }
+          ]
+         },
+         "custom": {
+          "thresholdsStyle": {
+           "mode": "line"
+          },
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "(1 - node_memory_SwapFree_bytes{job=\"node-exporter\"} / node_memory_SwapTotal_bytes{job=\"node-exporter\"}) * 100",
+         "legendFormat": "{{instance}}"
+        }
+       ],
+       "description": "Empty on a node with no swap.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 8,
+       "type": "timeseries",
+       "title": "Disk will fill? Available bytes",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 24
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "bytes",
+         "custom": {
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "node_filesystem_avail_bytes{job=\"node-exporter\",fstype!~\"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat\"}",
+         "legendFormat": "{{mountpoint}}"
+        }
+       ],
+       "description": "NodeDiskWillFillIn24h extrapolates the last 6 hours.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      },
+      {
+       "id": 9,
+       "type": "timeseries",
+       "title": "Memory by pod, top 10",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 24
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "bytes",
+         "custom": {
+          "lineWidth": 1,
+          "fillOpacity": 5
+         }
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "topk(10, sum by (namespace, pod) (container_memory_working_set_bytes{container!=\"\",container!=\"POD\"}))",
+         "legendFormat": "{{namespace}}/{{pod}}"
+        }
+       ],
+       "description": "Where the memory on the node actually goes.",
+       "options": {
+        "legend": {
+         "displayMode": "table",
+         "placement": "bottom",
+         "calcs": [
+          "lastNotNull",
+          "max"
+         ]
+        },
+        "tooltip": {
+         "mode": "multi"
+        }
+       }
+      }
+     ]
+    }

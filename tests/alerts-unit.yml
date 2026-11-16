@@ -1,0 +1,57 @@
+# promtool unit tests for the portfolio rules (tests/alerts.sh runs them).
+# Input series are invented; what is asserted is that the expression and the
+# `for` fire as documented, and stay quiet below the threshold.
+rule_files:
+  - rules-portfolio-host.yml
+  - rules-portfolio-containers.yml
+  - rules-portfolio-stack.yml
+  - rules-portfolio-probes.yml
+evaluation_interval: 1m
+tests:
+  # Memory at 95% of the node for 10 minutes: warning (>70, 15m) not yet,
+  # critical (>90, 5m) yes.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="n"}'
+        values: '1000+0x20'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="n"}'
+        values: '50+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeMemoryHigh
+        exp_alerts:
+          - exp_labels: {team: portfolio, severity: critical, instance: n, job: node-exporter}
+            exp_annotations:
+              summary: "Node memory above 90% (95%)"
+              description: "Used memory on n has been above 90% for 5 minutes; the kernel OOM killer is next. Find the top pod on the 'Node: oci-free' dashboard."
+  # A probe that fails for 5 minutes fires PortfolioProbeDown after 2.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{instance="https://x.invalid/",probe_group="public",env="prod"}'
+        values: '1 1 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PortfolioProbeDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PortfolioProbeDown
+        exp_alerts:
+          - exp_labels: {team: portfolio, severity: critical, instance: "https://x.invalid/", probe_group: public, env: prod}
+            exp_annotations:
+              summary: "Probe failed: https://x.invalid/"
+              description: "The Blackbox probe of https://x.invalid/ (public, prod) has failed for 2 minutes: down, wrong status or TLS error."
+  # A prod container at 80% of its memory limit: below 90, so no critical.
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="prod",pod="api-1",container="api"}'
+        values: '800+0x30'
+      - series: 'kube_pod_container_resource_limits{namespace="prod",pod="api-1",container="api",resource="memory"}'
+        values: '1000+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PodMemoryNearLimit
+        exp_alerts:
+          - exp_labels: {team: portfolio, severity: warning, namespace: prod, pod: api-1, container: api}
+            exp_annotations:
+              summary: "prod/api-1 (api) memory above 70% of its limit"
+              description: "Working set is 80% of the container's memory limit for 15 minutes."

@@ -1,0 +1,440 @@
+# Monitoring for the node and the portfolio (#54). Every rule carries
+# team=portfolio, which alertmanager.yaml.tmpl emails on: severity=critical at
+# once, severity=warning after a minute's grouping. The thresholds the owner
+# asked for are 70% (warning) and 90% (critical) of CPU, memory, disk and of
+# every container's own limit.
+#
+# `release: kube-prometheus-stack` is the label the chart's ruleSelector
+# matches (monitoring-values.yaml leaves it at the default), same as the
+# otel-collector rule in windom-alerts.yaml. Applied with kubectl, not by the
+# chart. Metrics are the chart's own: node-exporter, kube-state-metrics, the
+# kubelet/cAdvisor, plus the probe_* series of k8s/blackbox.yaml and the
+# Traefik / cert-manager series of k8s/portfolio-scrapes.yaml. A rule on a
+# series that does not exist stays silent rather than firing, so each section
+# says what it needs. docs/monitoring.md lists them all and how to test one.
+#
+# Same alertname at two severities is deliberate: the Alertmanager inhibit
+# rule mutes the warning while the critical is firing for the same target.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-host
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    - name: portfolio-host
+      rules:
+        - alert: NodeDown
+          expr: |
+            kube_node_status_condition{condition="Ready",status="true"} == 0
+            or up{job="node-exporter"} == 0
+          for: 2m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Node {{ $labels.node }}{{ $labels.instance }} is down or NotReady"
+            description: "The k3s node reports NotReady or node-exporter stopped answering for 2 minutes. Every pod alert is muted while this fires."
+
+        - alert: NodeCPUHigh
+          expr: 100 - avg by (instance) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m])) * 100 > 70
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Node CPU above 70% for 15m ({{ $value | printf \"%.0f\" }}%)"
+            description: "Host CPU on {{ $labels.instance }} has averaged {{ $value | printf \"%.0f\" }}% for 15 minutes. The node is 2 OCPU; see the 'Node: oci-free' dashboard and the top pods by CPU."
+        - alert: NodeCPUHigh
+          expr: 100 - avg by (instance) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m])) * 100 > 90
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Node CPU above 90% for 10m ({{ $value | printf \"%.0f\" }}%)"
+            description: "Host CPU on {{ $labels.instance }} has averaged {{ $value | printf \"%.0f\" }}% for 10 minutes; the site is likely slow. Find the top pod on the 'Node: oci-free' dashboard."
+
+        - alert: NodeMemoryHigh
+          expr: (1 - node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100 > 70
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Node memory above 70% ({{ $value | printf \"%.0f\" }}%)"
+            description: "Used memory (total minus MemAvailable) on {{ $labels.instance }} has been above 70% for 15 minutes. The node has 12 GB shared by everything in k8s/."
+        - alert: NodeMemoryHigh
+          expr: (1 - node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100 > 90
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Node memory above 90% ({{ $value | printf \"%.0f\" }}%)"
+            description: "Used memory on {{ $labels.instance }} has been above 90% for 5 minutes; the kernel OOM killer is next. Find the top pod on the 'Node: oci-free' dashboard."
+
+        # Every real filesystem node-exporter sees: the root disk and the data
+        # disk both appear here, labelled by mountpoint.
+        - alert: NodeDiskUsageHigh
+          expr: |
+            (1 - node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}
+               / node_filesystem_size_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}) * 100 > 70
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Disk {{ $labels.mountpoint }} above 70% ({{ $value | printf \"%.0f\" }}%)"
+            description: "{{ $labels.mountpoint }} ({{ $labels.device }}) on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full. Prometheus (20Gi), Loki, Tempo and the databases live on local-path volumes on this disk."
+        - alert: NodeDiskUsageHigh
+          expr: |
+            (1 - node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}
+               / node_filesystem_size_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}) * 100 > 90
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Disk {{ $labels.mountpoint }} above 90% ({{ $value | printf \"%.0f\" }}%)"
+            description: "{{ $labels.mountpoint }} ({{ $labels.device }}) on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full. Writes will start failing; free space or grow the volume now."
+        - alert: NodeDiskWillFillIn24h
+          expr: |
+            predict_linear(node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}[6h], 24 * 3600) < 0
+            and
+            node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}
+              / node_filesystem_size_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"} < 0.4
+          for: 1h
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Disk {{ $labels.mountpoint }} will fill within 24h"
+            description: "At the last 6 hours' rate {{ $labels.mountpoint }} on {{ $labels.instance }} runs out of space within a day (and is already past 60% used)."
+        - alert: NodeInodesHigh
+          expr: |
+            (1 - node_filesystem_files_free{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}
+               / node_filesystem_files{job="node-exporter",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*|nsfs|devtmpfs|vfat"}) * 100 > 90
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Inodes on {{ $labels.mountpoint }} above 90% ({{ $value | printf \"%.0f\" }}%)"
+            description: "{{ $labels.mountpoint }} on {{ $labels.instance }} is nearly out of inodes: new files fail while df still shows free space."
+
+        # Per-core load: the node has 2 OCPU.
+        - alert: NodeLoadHigh
+          expr: node_load5{job="node-exporter"} / count by (instance) (node_cpu_seconds_total{job="node-exporter",mode="idle"}) > 1.5
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Node load above 1.5 per core ({{ $value | printf \"%.1f\" }})"
+            description: "5-minute load average per core on {{ $labels.instance }} has exceeded 1.5 for 15 minutes."
+        - alert: NodeLoadHigh
+          expr: node_load5{job="node-exporter"} / count by (instance) (node_cpu_seconds_total{job="node-exporter",mode="idle"}) > 3
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Node load above 3 per core ({{ $value | printf \"%.1f\" }})"
+            description: "5-minute load average per core on {{ $labels.instance }} has exceeded 3 for 10 minutes; processes are queueing."
+
+        - alert: NodeSwapHigh
+          expr: (1 - node_memory_SwapFree_bytes{job="node-exporter"} / node_memory_SwapTotal_bytes{job="node-exporter"}) * 100 > 70
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Swap above 70% ({{ $value | printf \"%.0f\" }}%)"
+            description: "Swap on {{ $labels.instance }} is over 70% used for 15 minutes: memory pressure. (Silent on a node with no swap.)"
+        - alert: NodeSwapHigh
+          expr: (1 - node_memory_SwapFree_bytes{job="node-exporter"} / node_memory_SwapTotal_bytes{job="node-exporter"}) * 100 > 90
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Swap above 90% ({{ $value | printf \"%.0f\" }}%)"
+            description: "Swap on {{ $labels.instance }} is over 90% used for 10 minutes; the node is thrashing."
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-containers
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    # prod, preprod, staging. Usage-versus-limit rules only see containers that
+    # HAVE a limit (kube_pod_container_resource_limits); a container with none
+    # is invisible to them by construction.
+    - name: portfolio-containers
+      rules:
+        - alert: PodMemoryNearLimit
+          expr: |
+            sum by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~"prod|preprod|staging",container!="",container!="POD"})
+            / on (namespace, pod, container)
+            kube_pod_container_resource_limits{namespace=~"prod|preprod|staging",resource="memory"} * 100 > 70
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) memory above 70% of its limit"
+            description: "Working set is {{ $value | printf \"%.0f\" }}% of the container's memory limit for 15 minutes."
+        - alert: PodMemoryNearLimit
+          expr: |
+            sum by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~"prod|preprod|staging",container!="",container!="POD"})
+            / on (namespace, pod, container)
+            kube_pod_container_resource_limits{namespace=~"prod|preprod|staging",resource="memory"} * 100 > 90
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) memory above 90% of its limit"
+            description: "Working set is {{ $value | printf \"%.0f\" }}% of the container's memory limit for 5 minutes; an OOM kill is imminent."
+        - alert: PodOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{namespace=~"prod|preprod|staging",reason="OOMKilled"} == 1
+            and on (namespace, pod, container)
+            increase(kube_pod_container_status_restarts_total{namespace=~"prod|preprod|staging"}[15m]) > 0
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) was OOM-killed"
+            description: "The container restarted in the last 15 minutes and its last termination reason is OOMKilled. Raise its memory limit or fix the leak."
+
+        - alert: PodCPUNearLimit
+          expr: |
+            sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~"prod|preprod|staging",container!="",container!="POD"}[5m]))
+            / on (namespace, pod, container)
+            kube_pod_container_resource_limits{namespace=~"prod|preprod|staging",resource="cpu"} * 100 > 70
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) CPU above 70% of its limit"
+            description: "CPU use is {{ $value | printf \"%.0f\" }}% of the container's CPU limit for 15 minutes. (Only containers with a CPU limit are measured.)"
+        - alert: PodCPUNearLimit
+          expr: |
+            sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~"prod|preprod|staging",container!="",container!="POD"}[5m]))
+            / on (namespace, pod, container)
+            kube_pod_container_resource_limits{namespace=~"prod|preprod|staging",resource="cpu"} * 100 > 90
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) CPU above 90% of its limit"
+            description: "CPU use is {{ $value | printf \"%.0f\" }}% of the container's CPU limit for 10 minutes."
+        - alert: PodCPUThrottled
+          expr: |
+            sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{namespace=~"prod|preprod|staging",container!=""}[5m]))
+            / sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{namespace=~"prod|preprod|staging",container!=""}[5m])) * 100 > 25
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) CPU-throttled in {{ $value | printf \"%.0f\" }}% of periods"
+            description: "The container hit its CPU limit in more than 25% of scheduling periods for 15 minutes; it is slower than the node's idle CPU suggests."
+
+        - alert: PodRestartingOften
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"prod|preprod|staging"}[1h]) > 3
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) restarted {{ $value | printf \"%.0f\" }} times in 1h"
+            description: "More than 3 restarts in an hour. `kubectl -n {{ $labels.namespace }} logs {{ $labels.pod }} -c {{ $labels.container }} --previous`."
+        - alert: PodCrashLooping
+          expr: kube_pod_container_status_waiting_reason{namespace=~"prod|preprod|staging",reason="CrashLoopBackOff"} == 1
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is in CrashLoopBackOff"
+            description: "The container has been crash-looping for 5 minutes."
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{namespace=~"prod|preprod|staging",condition="false"} == 1
+            unless on (namespace, pod) kube_pod_status_phase{phase="Succeeded"} == 1
+          for: 5m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} has not been ready for 5 minutes"
+            description: "The pod is Pending, failing its readiness probe, or its containers are not running."
+        - alert: DeploymentReplicasUnavailable
+          expr: kube_deployment_status_replicas_unavailable{namespace=~"prod|preprod|staging"} > 0
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.deployment }} has {{ $value | printf \"%.0f\" }} unavailable replica(s)"
+            description: "Fewer replicas are available than the Deployment wants, for 10 minutes. A rollout in progress clears this by itself."
+        - alert: DeploymentReplicasUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace=~"prod|preprod|staging"} == 0
+            and kube_deployment_spec_replicas{namespace=~"prod|preprod|staging"} > 0
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.deployment }} has NO available replica"
+            description: "Every replica of the Deployment is unavailable for 5 minutes; whatever it serves is down."
+
+        # CouchDB. prod's is the shared CouchDB in `obsidian` (a StatefulSet
+        # from the couchdb Helm chart); preprod's is Deployment preprod/couch.
+        # The site's own view of the store (/health/ready, db up/down) is the
+        # PortfolioProbeDown alert in portfolio-probes.
+        - alert: CouchDBDown
+          expr: |
+            kube_deployment_status_replicas_available{namespace="preprod",deployment="couch"} == 0
+            or kube_statefulset_status_replicas_ready{namespace="obsidian",statefulset=~"couchdb.*"} == 0
+          for: 3m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "CouchDB is down ({{ $labels.namespace }})"
+            description: "No ready CouchDB replica in {{ $labels.namespace }} for 3 minutes. The API's /health/ready reports db=down and the content store is unavailable."
+
+        # kubelet volume stats. local-path volumes may not report them on every
+        # k3s build; if `kubelet_volume_stats_used_bytes` has no series the
+        # PVC rules are silent and NodeDiskUsageHigh is the backstop.
+        - alert: PVCUsageHigh
+          expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100 > 70
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} above 70% ({{ $value | printf \"%.0f\" }}%)"
+            description: "The volume is {{ $value | printf \"%.0f\" }}% full. For couch-data this is the content store."
+        - alert: PVCUsageHigh
+          expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100 > 90
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} above 90% ({{ $value | printf \"%.0f\" }}%)"
+            description: "The volume is {{ $value | printf \"%.0f\" }}% full; writes will start failing."
+        - alert: PVCWillFillIn24h
+          expr: |
+            predict_linear(kubelet_volume_stats_available_bytes[6h], 24 * 3600) < 0
+            and kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.4
+          for: 1h
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} will fill within 24h"
+            description: "At the last 6 hours' rate the volume runs out of space within a day."
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-stack
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    - name: portfolio-stack
+      rules:
+        # Traefik series come from the PodMonitor in portfolio-scrapes.yaml.
+        # Traefik labels per router/service, not per Host header, so "per
+        # site" is the service label (e.g. prod-web-80@kubernetes).
+        - alert: TraefikHigh5xxRatio
+          expr: |
+            sum by (service) (rate(traefik_service_requests_total{code=~"5.."}[5m]))
+            / sum by (service) (rate(traefik_service_requests_total[5m])) * 100 > 5
+            and sum by (service) (rate(traefik_service_requests_total[5m])) > 0.05
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Traefik service {{ $labels.service }}: {{ $value | printf \"%.0f\" }}% 5xx"
+            description: "More than 5% of requests to {{ $labels.service }} answered 5xx over 5 minutes (ignored below 3 requests a minute)."
+        - alert: TraefikHighLatency
+          expr: |
+            histogram_quantile(0.95, sum by (le, service) (rate(traefik_service_request_duration_seconds_bucket[5m]))) > 2
+            and sum by (service) (rate(traefik_service_requests_total[5m])) > 0.05
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Traefik service {{ $labels.service }}: p95 {{ $value | printf \"%.1f\" }}s"
+            description: "p95 request latency for {{ $labels.service }} has been above 2s for 10 minutes."
+
+        # Certificates. The cert-manager series need the ServiceMonitor in
+        # portfolio-scrapes.yaml; PortfolioProbeCertExpiring (blackbox) checks
+        # the certificate the visitor is actually served, independently.
+        - alert: CertificateExpiringSoon
+          expr: (certmanager_certificate_expiration_timestamp_seconds - time()) < 21 * 86400
+          for: 1h
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 21 days"
+            description: "cert-manager has not renewed it (it normally renews at 30 days). Check the Certificate, its Order and the ClusterIssuer."
+        - alert: CertificateExpiringSoon
+          expr: (certmanager_certificate_expiration_timestamp_seconds - time()) < 7 * 86400
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in under 7 days"
+            description: "cert-manager has not renewed it; browsers will refuse the site when it lapses."
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="False"} == 1
+          for: 15m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} is not Ready"
+            description: "cert-manager reports the Certificate not Ready for 15 minutes. `kubectl -n {{ $labels.namespace }} describe certificate {{ $labels.name }}`."
+
+        # Backups: a CronJob (backup/couchdb-backup, forgejo/forgejo-backup)
+        # that has not succeeded within 26h, or never has. A failed run and a
+        # run that never started both show up as that.
+        - alert: BackupStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace=~"backup|forgejo"} > 26 * 3600
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Backup {{ $labels.namespace }}/{{ $labels.cronjob }} has not succeeded in 26h"
+            description: "The last successful run was more than 26 hours ago (the schedule is nightly). `kubectl -n {{ $labels.namespace }} get jobs` and docs/backups.md."
+        - alert: BackupNeverSucceeded
+          expr: |
+            time() - kube_cronjob_created{namespace=~"backup|forgejo"} > 26 * 3600
+            unless on (namespace, cronjob) kube_cronjob_status_last_successful_time
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Backup {{ $labels.namespace }}/{{ $labels.cronjob }} has never succeeded"
+            description: "The CronJob is over 26 hours old and has no successful run on record."
+
+        # Monitoring's own components, from kube-state-metrics so no scrape
+        # job names are assumed. Loki and Tempo have no scrape of their own.
+        - alert: MonitoringComponentDown
+          expr: |
+            kube_statefulset_status_replicas_ready{namespace="monitoring",statefulset=~"prometheus-.*|alertmanager-.*"} == 0
+            or kube_statefulset_status_replicas_ready{namespace="observability",statefulset=~"loki|tempo"} == 0
+            or kube_deployment_status_replicas_available{namespace="monitoring",deployment=~".*-grafana"} == 0
+            or kube_deployment_status_replicas_available{namespace="observability",deployment="otel-collector"} == 0
+          for: 5m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.statefulset }}{{ $labels.deployment }} has no ready replica"
+            description: "A monitoring component (Prometheus, Alertmanager, Grafana, otel-collector, Loki or Tempo) has been down for 5 minutes. If it is Prometheus or Alertmanager you will not be emailed about this; Grafana and the node are the places to look."
+        - alert: PrometheusTargetDown
+          expr: up{job=~"node-exporter|kube-state-metrics|kubelet|kube-prometheus-stack-.*|otel-collector"} == 0
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) is down"
+            description: "Prometheus cannot scrape this target, so the rules that use it are blind."
+
+        # Watchdog is the chart's always-firing rule, routed to "null". If it
+        # ever stops while Prometheus is alive, the rule files were not loaded
+        # and every other rule here is dead. (A true dead-man's switch needs an
+        # external receiver; see docs/monitoring.md.)
+        - alert: WatchdogMissing
+          expr: absent(ALERTS{alertname="Watchdog",alertstate="firing"})
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "The Watchdog alert is not firing"
+            description: "Prometheus is up but the chart's always-firing Watchdog rule is not: rule loading is broken."
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: portfolio-probes
+  namespace: monitoring
+  labels: {release: kube-prometheus-stack, app.kubernetes.io/part-of: portfolio-monitoring}
+spec:
+  groups:
+    - name: portfolio-probes
+      rules:
+        # Series come from the Probe objects in blackbox.yaml.
+        - alert: PortfolioProbeDown
+          expr: probe_success == 0
+          for: 2m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "Probe failed: {{ $labels.instance }}"
+            description: "The Blackbox probe of {{ $labels.instance }} ({{ $labels.probe_group }}, {{ $labels.env }}) has failed for 2 minutes: down, wrong status or TLS error."
+        - alert: PortfolioProbeSlow
+          expr: probe_duration_seconds > 2 and probe_success == 1
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Probe slow: {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}s)"
+            description: "{{ $labels.instance }} has taken more than 2 seconds to answer for 10 minutes."
+        - alert: PortfolioProbeCertExpiring
+          expr: (probe_ssl_earliest_cert_expiry - time()) < 14 * 86400 and probe_ssl_earliest_cert_expiry > 0
+          for: 30m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "TLS certificate served by {{ $labels.instance }} expires in under 14 days"
+            description: "The certificate a visitor is actually served for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
+        - alert: PortfolioProbeCertExpiring
+          expr: (probe_ssl_earliest_cert_expiry - time()) < 3 * 86400 and probe_ssl_earliest_cert_expiry > 0
+          for: 10m
+          labels: {team: portfolio, severity: critical}
+          annotations:
+            summary: "TLS certificate served by {{ $labels.instance }} expires in under 3 days"
+            description: "The certificate a visitor is actually served for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
