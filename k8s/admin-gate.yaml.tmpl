@@ -27,7 +27,10 @@ metadata: {name: github-auth, namespace: prod}
 spec:
   forwardAuth:
     address: http://oauth2-proxy.auth.svc.cluster.local:4180/
-    trustForwardHeader: true
+    # false on purpose (#21): Traefik must write X-Forwarded-* itself. With true,
+    # a client could claim any X-Forwarded-Uri. Do NOT 'fix' #7 with
+    # forwardedHeaders.trustedIPs on the pod CIDR: that trusts every client.
+    trustForwardHeader: false
     authResponseHeaders:
       - X-Auth-Request-User
       - X-Auth-Request-Email

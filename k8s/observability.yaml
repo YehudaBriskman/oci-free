@@ -281,6 +281,22 @@ spec:
     - port: app-metrics
       interval: 30s
       honorLabels: true
+      # The sender is anyone holding the bearer token, so its labels and metric
+      # names are untrusted (#871). Pin what a sender may claim.
+      metricRelabelings:
+        # Only the families the dashboards read. Anything else is dropped, so a
+        # sender cannot invent series that look like the cluster's own.
+        - sourceLabels: [__name__]
+          regex: "(db_client_.*|http_client_.*|http_server_.*|nodejs_.*|process_.*|v8js_.*|target_info)"
+          action: keep
+        # job is fixed, so the sender cannot impersonate another scrape job.
+        - targetLabel: job
+          replacement: windom-api
+          action: replace
+        # instance is the sender's own machine id; accept a plain id only.
+        - sourceLabels: [instance]
+          regex: "[A-Za-z0-9._:-]{1,64}"
+          action: keep
 ---
 # ---------------------------------------------------------------- Edge
 # Public, no oauth2-proxy: the bearer token is checked by the collector.

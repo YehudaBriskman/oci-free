@@ -10,7 +10,7 @@ Persistent data uses k3s's `local-path` volumes on the boot disk.
 | `traefik-config.yaml` | configures the Traefik that k3s bundles: HTTP to HTTPS redirect, and `externalTrafficPolicy: Local` so source addresses survive for allowlists |
 | `cluster-issuers.yaml`, `wildcard-cert.yaml` | cert-manager issuers (Let's Encrypt) and a wildcard certificate for the domain |
 | `oauth2-proxy.yaml` | a single sign-on proxy (GitHub sign-in, single-user allowlist) that gates the admin surfaces |
-| `admin-ingress.yaml`, `admin-gate.template.yaml` | the site's admin routes, behind that proxy |
+| `admin-ingress.yaml`, `admin-gate.yaml.tmpl` | the site's admin routes, behind that proxy |
 | a private-only middleware | a Traefik middleware that admits only the private network, for hosts with no public audience |
 
 Hosts that cannot complete a browser redirect (git over HTTPS, a sync client

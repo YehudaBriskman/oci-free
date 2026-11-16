@@ -60,6 +60,7 @@ check() { # check <description> <command...>
 called() { grep -qE -- "$1" "$STUB_DIR/calls"; }
 not_called() { ! grep -qE -- "$1" "$STUB_DIR/calls"; }
 contains() { grep -qF -- "$2" <<<"$1"; }
+not_contains() { ! grep -qF -- "$2" <<<"$1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1"; }
 
 t() { # t <name> <function>
@@ -109,7 +110,7 @@ proceeds() {
 }
 
 for s in "k8s/portfolio-apply.sh prod" "k8s/portfolio-apply.sh preprod" "k8s/telemetry-secrets.sh" \
-  "k8s/preprod-secrets.sh" "k8s/preprod-admin-gate.sh" "k8s/ci-kubeconfig.sh prod" \
+  "k8s/preprod-secrets.sh" "k8s/preprod-admin-gate.sh" "k8s/admin-gate.sh" "k8s/ci-kubeconfig.sh prod" \
   "deploy-portfolio.sh api"; do
   # shellcheck disable=SC2086 # script and its argument
   eval "g_refuse() { refuses $s; }; g_proceed() { proceeds $s; }"
@@ -124,7 +125,7 @@ t_inventory() {
   while IFS= read -r f; do
     case "$f" in
       k8s/portfolio-apply.sh | k8s/telemetry-secrets.sh | k8s/preprod-secrets.sh | \
-        k8s/preprod-admin-gate.sh | k8s/ci-kubeconfig.sh | deploy-portfolio.sh) ;;
+        k8s/preprod-admin-gate.sh | k8s/admin-gate.sh | k8s/ci-kubeconfig.sh | deploy-portfolio.sh) ;;
       # Runs kubectl on the node over ssh, read-only (`get secret`).
       k8s/otel-token-to-fly.sh) ;;
       *) echo "      $f runs kubectl and is not covered by the guard tests"; bad=1 ;;
@@ -295,6 +296,21 @@ t_gate_stdin_only() {
     check "secret on no argv" not_called proxy-sentinel-77
 }
 t "preprod-admin-gate: the proxy secret only on stdin" t_gate_stdin_only
+
+t_prod_gate_stdin_only() {
+  export STUB_NODE=present STUB_NAMESPACES="prod" STUB_SECRETS="prod/portfolio-api-env"
+  # Made up at run time, so no secret-shaped literal sits in the repository.
+  local sentinel
+  sentinel="sentinel-$(openssl rand -hex 8)"
+  STUB_DATA_prod_portfolio_api_env_ADMIN_PROXY_SECRET=$(b64 "$sentinel")
+  export STUB_DATA_prod_portfolio_api_env_ADMIN_PROXY_SECRET
+  run k8s/admin-gate.sh
+  check "exit 0 (rc $RC: $ERR)" [ "$RC" -eq 0 ] &&
+    check "secret on stdin" contains "$(stdin_of 'apply -f -')" "$sentinel" &&
+    check "placeholder gone" not_contains "$(stdin_of 'apply -f -')" '__ADMIN_PROXY_SECRET__' &&
+    check "secret on no argv" not_called "$sentinel"
+}
+t "admin-gate (prod): the proxy secret only on stdin" t_prod_gate_stdin_only
 
 # ------------------------------------------------------------ 4. fly --------
 t_fly_short() {

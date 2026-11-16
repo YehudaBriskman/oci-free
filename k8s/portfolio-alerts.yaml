@@ -323,6 +323,17 @@ spec:
             summary: "Traefik service {{ $labels.service }}: p95 {{ $value | printf \"%.1f\" }}s"
             description: "p95 request latency for {{ $labels.service }} has been above 2s for 10 minutes."
 
+        # The public telemetry endpoint's rate limit is one global bucket (every
+        # client shares one source address, #7), so anonymous load can starve
+        # the real sender. 429s mean the limit is biting: look at who is calling.
+        - alert: TraefikRateLimited
+          expr: sum(rate(traefik_entrypoint_requests_total{code="429"}[5m])) > 0.1
+          for: 10m
+          labels: {team: portfolio, severity: warning}
+          annotations:
+            summary: "Traefik is answering 429 ({{ $value | printf \"%.1f\" }}/s)"
+            description: "A rate limit has been rejecting requests for 10 minutes. The public telemetry endpoint's limit is global, so flood traffic can crowd out the real sender."
+
         # Certificates. The cert-manager series need the PodMonitor in
         # portfolio-scrapes.yaml; PortfolioProbeCertExpiring (blackbox) checks
         # the certificate the visitor is actually served, independently.
