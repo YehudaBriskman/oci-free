@@ -103,7 +103,7 @@ spec:
             - {name: NGINX_FORWARD_IDENTITY, value: "off"}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
-            limits:   {memory: 128Mi}
+            limits:   {cpu: 200m, memory: 128Mi}
           readinessProbe:
             httpGet: {path: /, port: 8080}
             initialDelaySeconds: 3
@@ -164,7 +164,7 @@ spec:
             - {name: NODE_ENV, value: production}
           resources:
             requests: {cpu: 20m, memory: 64Mi}
-            limits:   {memory: 512Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
           # Without one, a new pod took traffic the moment its container
           # started, before Express was listening, and maxUnavailable: 0 would
           # gate on nothing. /health and not /health/ready: ready also asks
