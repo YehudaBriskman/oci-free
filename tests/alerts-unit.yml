@@ -7,6 +7,7 @@ rule_files:
   - rules-portfolio-stack.yml
   - rules-portfolio-probes.yml
   - rules-portfolio-logs.yml
+  - rules-otel-collector.yml
 evaluation_interval: 1m
 tests:
   # Memory at 95% of the node for 10 minutes: warning (>70, 15m) not yet,
@@ -72,3 +73,31 @@ tests:
             exp_annotations:
               summary: "Log shipper Alloy is down or not scraped"
               description: "Alloy (observability) has not answered Prometheus for 10 minutes, so prod and preprod pod logs are not reaching Loki. Check `kubectl -n observability get pods -l app=alloy` and its logs."
+  # Two refused counters with the SAME labels (spans and metric points both
+  # over http) must not collide: the rule once failed with "vector cannot
+  # contain metrics with the same labelset". It fires when either grows...
+  - interval: 1m
+    input_series:
+      - series: 'otelcol_receiver_refused_spans{job="otel-collector",receiver="otlp",transport="http"}'
+        values: '0+0x10 5+0x20'
+      - series: 'otelcol_receiver_refused_metric_points{job="otel-collector",receiver="otlp",transport="http"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: OtelCollectorRejecting
+        exp_alerts:
+          - exp_labels: {team: windom, severity: warning}
+            exp_annotations:
+              summary: "The OTLP collector refused or dropped telemetry in the last 15 minutes"
+              description: "Usually memory_limiter pressure, or Loki/Tempo down. Check the collector's otelcol_* series."
+  # ...and stays quiet when both are flat.
+  - interval: 1m
+    input_series:
+      - series: 'otelcol_receiver_refused_spans{job="otel-collector",receiver="otlp",transport="http"}'
+        values: '3+0x30'
+      - series: 'otelcol_receiver_refused_metric_points{job="otel-collector",receiver="otlp",transport="http"}'
+        values: '7+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: OtelCollectorRejecting
+        exp_alerts: []
