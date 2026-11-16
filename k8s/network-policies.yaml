@@ -43,6 +43,8 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # The api fetches the SPA shell from web to render /api/seo/render/*.
+        - podSelector: {matchLabels: {app: api}}
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
           podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
@@ -105,6 +107,8 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # The api fetches the SPA shell from web to render /api/seo/render/*.
+        - podSelector: {matchLabels: {app: api}}
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
           podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
