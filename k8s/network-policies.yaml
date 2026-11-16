@@ -14,8 +14,12 @@
 # Cloudflare, and the instance metadata service is already blocked on the node
 # (node/oci-free-guard.sh).
 #
-# Not yet covered: monitoring, forgejo, cert-manager, kube-system. observability
-# has its own (observability.yaml). One namespace at a time, preprod first.
+# Not covered: kube-system (k3s's own), and egress. observability has its own
+# policies (observability.yaml). One namespace at a time.
+#
+# API-server callers (admission webhooks of cert-manager and the Prometheus
+# operator) come from the node itself, so they need no allow rule here; the
+# rollout was checked with a server-side dry run that triggers each webhook.
 #
 # Roll back one namespace:  kubectl -n NS delete networkpolicy --all
 #
@@ -176,3 +180,111 @@ metadata: {name: default-deny-ingress, namespace: backup}
 spec:
   podSelector: {}
   policyTypes: [Ingress]
+---
+# ----------------------------------------------------------- cert-manager
+# Only Prometheus calls in (metrics, 9402). The webhook is called by the API
+# server from the node, which the policy does not block.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: cert-manager}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: metrics-from-prometheus, namespace: cert-manager}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 9402}]
+---
+# ---------------------------------------------------------------- forgejo
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: forgejo}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# The edge (git.<domain>), the CI runner (clones and API calls) and Prometheus.
+# The runner and the backup jobs accept no inbound connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: forgejo, namespace: forgejo}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: forgejo}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+        - podSelector: {matchLabels: {app: forgejo-runner}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+      ports: [{protocol: TCP, port: 3000}]
+    - from: [{podSelector: {matchLabels: {app: forgejo-runner}}}]
+      ports: [{protocol: TCP, port: 22}]
+---
+# ------------------------------------------------------------- monitoring
+# grafana-ingress and blackbox-exporter already exist (grafana-netpol.yaml,
+# blackbox.yaml). Everything else in the namespace was open; Prometheus is the
+# only caller of the exporters, Grafana and Prometheus read each other's data.
+# node-exporter runs on the host network and is not affected.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-ingress, namespace: monitoring}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: prometheus, namespace: monitoring}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+  policyTypes: [Ingress]
+  ingress:
+    # Grafana's queries; the config reloader's port is scraped by Prometheus itself.
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}}]
+      ports: [{protocol: TCP, port: 9090}]
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}}]
+      ports: [{protocol: TCP, port: 8080}, {protocol: TCP, port: 9090}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: alertmanager, namespace: monitoring}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: alertmanager}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}
+      ports: [{protocol: TCP, port: 9093}, {protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: kube-state-metrics, namespace: monitoring}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: kube-state-metrics}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}}]
+      ports: [{protocol: TCP, port: 8080}]
+---
+# The operator's own metrics. Its admission webhook is called by the API server
+# from the node.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: operator, namespace: monitoring}
+spec:
+  podSelector: {matchLabels: {app: kube-prometheus-stack-operator}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}}]
+      ports: [{protocol: TCP, port: 10250}]
