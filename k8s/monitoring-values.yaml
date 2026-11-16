@@ -7,6 +7,13 @@ kubeControllerManager: {enabled: false}
 kubeEtcd:              {enabled: false}
 kubeProxy:             {enabled: false}
 
+# Dashboards for operating systems this server is not (the chart ships AIX and
+# macOS Node Exporter boards; every panel on them is empty here).
+nodeExporter:
+  operatingSystems:
+    aix:    {enabled: false}
+    darwin: {enabled: false}
+
 prometheus:
   prometheusSpec:
     retention: 15d
