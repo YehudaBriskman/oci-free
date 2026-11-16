@@ -27,7 +27,7 @@ rejected it with 535.
 Alerts are grouped by `alertname` and `namespace`, so one problem on ten pods is
 one email. A critical mutes the same alert's warning, and a `NodeDown` mutes every
 other portfolio alert (the pod, probe and edge alerts it explains). The chart's
-own alerts and `Watchdog` still go to `null`.
+own alerts still go to `null`. `Watchdog` goes to the external heartbeat (below).
 
 ## What is alerted
 
@@ -90,10 +90,13 @@ the admin host, where a 302/401/403 from the SSO counts as up; and, in-cluster,
 health routes are not reachable from outside (nginx forwards only `/api/*`), and
 preprod is tailnet-only at the edge, hence the in-cluster Service URLs.
 
-Two limits worth knowing. A dead-man's switch proper (an *external* service that
-emails when Alertmanager stops talking) does not exist yet; `WatchdogMissing` only
-catches rule loading breaking while Prometheus lives, and if Prometheus or
-Alertmanager is down the email cannot be sent (the node-level and Grafana views
+Two limits worth knowing. The dead-man's switch is an *external* heartbeat
+(healthchecks.io): `Watchdog` is POSTed to the ping URL in Secret
+`monitoring/alertmanager-heartbeat` (key `url`, created by hand, never in git)
+every 2 minutes, and the service emails the owner when pings stop (period 5 min,
+grace 5 min). It covers the node, Prometheus or Alertmanager dying. `WatchdogMissing` only
+catches rule loading breaking while Prometheus lives; if Prometheus or
+Alertmanager is down the in-cluster email cannot be sent (the node-level and Grafana views
 are the fallback). The portfolio API exposes no `/metrics` (checked in
 `portfolio_site` backend/src), so there are no application-level error-rate, mail
 or queue alerts; that is a follow-up in that repository.
