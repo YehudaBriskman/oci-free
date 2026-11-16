@@ -7,7 +7,11 @@
 # the node going away. That needs an offsite copy, which is tracked separately.
 apiVersion: v1
 kind: Namespace
-metadata: {name: backup}
+metadata:
+  name: backup
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -1,0 +1,61 @@
+# Pod Security admission labels for namespaces that no other manifest here
+# declares (#20). `kubectl apply` adds these labels and leaves the rest of each
+# namespace alone, so it is safe on the live cluster.
+#
+# Levels were chosen from a server-side dry run against the running pods
+# (kubectl label --dry-run=server ns X pod-security.kubernetes.io/enforce=...):
+#   baseline    passes today in prod, preprod, auth, backup, obsidian, cert-manager
+#   restricted  does not yet: most pods lack runAsNonRoot / seccompProfile /
+#               allowPrivilegeEscalation=false. `warn: restricted` keeps that visible.
+# The two namespaces that cannot be baseline, and why:
+#   monitoring  node-exporter needs host namespaces, hostPath and a hostPort. A
+#               namespace has one level, so it is warn-only here, not enforced.
+#   forgejo     the CI runner's docker-in-docker sidecar is privileged. Labelled
+#               privileged on purpose so the exception is written down, not default.
+# `observability` and `preprod`/`backup` carry their labels in their own files.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auth
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: obsidian
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgejo
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline

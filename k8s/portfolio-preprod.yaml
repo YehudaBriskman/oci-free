@@ -69,7 +69,13 @@
 #
 apiVersion: v1
 kind: Namespace
-metadata: {name: preprod}
+metadata:
+  name: preprod
+  labels:
+    # Pod Security admission (#20). The workloads already pass baseline
+    # (checked with a server-side dry run); warn on restricted shows what is left.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
 ---
 # Response headers, not a gate. See (1) in the header: the gate is the
 # `github-auth` gate, and this is what keeps a crawler out of the index
