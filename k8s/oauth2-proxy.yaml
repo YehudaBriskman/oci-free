@@ -9,7 +9,7 @@ spec:
     spec:
       containers:
         - name: oauth2-proxy
-          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048
           args:
             - --provider=github
             # The allowlist. Without it ANY GitHub account on earth could sign in.
@@ -42,7 +42,7 @@ spec:
             # 302 to github.com, which turns a same-origin fetch into a
             # cross-origin one and fails CORS — a console full of errors for
             # files that are already public on the main site.
-            - --skip-auth-route=^/(site\.webmanifest|favicon\.(ico|svg)|apple-touch-icon\.png|icon-(192|512)\.png|og[^/]*\.png|robots\.txt)$
+            - --skip-auth-route=^/(site\.webmanifest|favicon\.(ico|svg)|apple-touch-icon\.png|icon-(192|512)\.png|og(-blog|-projects)?\.png|robots\.txt)$
           env:
             - {name: OAUTH2_PROXY_CLIENT_ID,     valueFrom: {secretKeyRef: {name: oauth2-proxy, key: client-id}}}
             - {name: OAUTH2_PROXY_CLIENT_SECRET, valueFrom: {secretKeyRef: {name: oauth2-proxy, key: client-secret}}}

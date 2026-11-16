@@ -53,6 +53,14 @@ variable "ssh_allowed_cidr" {
   EOT
   type        = string
   default     = null
+
+  validation {
+    condition = var.ssh_allowed_cidr == null || (
+      can(cidrhost(var.ssh_allowed_cidr, 0)) &&
+      tonumber(split("/", var.ssh_allowed_cidr)[1]) >= 16
+    )
+    error_message = "ssh_allowed_cidr must be a valid CIDR no wider than /16 (a /0 would open SSH to the whole internet). Use null to close public SSH."
+  }
 }
 
 variable "tailscale_auth_key" {
