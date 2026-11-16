@@ -90,12 +90,13 @@ spec:
     # the node's own address on 6443 before the policy sees the packet, and
     # this repo has no other client of it to copy (kube-state-metrics and the
     # operator live in a namespace without default-deny). Port 6443 only, and
-    # private ranges only: never the internet, never the metadata service.
+    # private and tailnet ranges only: never the internet, never the metadata service.
     # Narrow it to the node's /32 if you want it tighter.
     - to:
         - ipBlock: {cidr: 10.0.0.0/8}
         - ipBlock: {cidr: 172.16.0.0/12}
         - ipBlock: {cidr: 192.168.0.0/16}
+        - ipBlock: {cidr: 100.64.0.0/10}   # tailnet: k3s advertises the API on the node's Tailscale address
       ports: [{protocol: TCP, port: 6443}]
 ---
 # Loki accepts pushes from the collector only; this adds Alloy next to it.
@@ -128,7 +129,7 @@ data:
     }
 
     discovery.relabel "pods" {
-      targets = discovery.kubernetes.pods.output
+      targets = discovery.kubernetes.pods.targets
 
       rule {
         action        = "keep"
