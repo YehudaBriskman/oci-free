@@ -72,6 +72,14 @@ spec:
           # reschedule into a registry round trip the node does not need.
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8080}]
+          # The image's USER is 101 (nginx on 8080), so non-root is already true;
+          # this makes the cluster refuse a root image instead of assuming it.
+          # No readOnlyRootFilesystem: nginx writes its temp and cache paths.
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
           env:
             # The API's host, fully qualified, and the qualification is the
             # entire reason this variable exists.
